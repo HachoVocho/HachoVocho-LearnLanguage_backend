@@ -154,6 +154,12 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # Use SMTP for production
 DEFAULT_FROM_EMAIL = 'noreply@yourdomain.com'
 
-
-
 SECURE_SSL_REDIRECT = False
+
+# Directory where collected static files will be stored
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# Optional: Additional static file directories
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),
+]
