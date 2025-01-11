@@ -157,7 +157,7 @@ DEFAULT_FROM_EMAIL = 'noreply@yourdomain.com'
 SECURE_SSL_REDIRECT = False
 
 # Directory where collected static files will be stored
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 
 # Optional: Additional static file directories
 STATICFILES_DIRS = [
