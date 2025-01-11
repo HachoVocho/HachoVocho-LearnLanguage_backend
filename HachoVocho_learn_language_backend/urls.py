@@ -26,3 +26,6 @@ urlpatterns = [
     path('api/localization/', include('localization.urls')),
     path('api/listening/', include('listening_module.urls'))
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
