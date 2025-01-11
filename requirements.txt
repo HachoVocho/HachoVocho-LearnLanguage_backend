@@ -35,7 +35,6 @@ hyperframe==5.2.0
 idna==2.10
 proto-plus==1.25.0
 protobuf==5.29.3
-psycopg2==2.9.10
 pyasn1==0.6.1
 pyasn1_modules==0.4.1
 pydantic==2.10.5
