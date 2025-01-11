@@ -159,7 +159,3 @@ SECURE_SSL_REDIRECT = False
 # Directory where collected static files will be stored
 STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 
-# Optional: Additional static file directories
-STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'static'),
-]
