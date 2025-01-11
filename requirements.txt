@@ -29,7 +29,6 @@ hstspreload==2025.1.1
 httpcore==0.9.1
 httplib2==0.22.0
 httptools==0.6.4
-httpx==0.13.3
 hyperframe==5.2.0
 idna==2.10
 proto-plus==1.25.0
