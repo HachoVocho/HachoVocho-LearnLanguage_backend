@@ -2,6 +2,7 @@
 
 import json
 import os
+import logging
 import subprocess
 import tempfile
 import django
@@ -32,16 +33,17 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 data_parts = bytes_data.split(b'|', 1)
                 if len(data_parts) != 2:
                     raise ValueError("Invalid data format: Expected metadata and audio data.")
-
+                logging.error(f"data_parts: {data_parts}", exc_info=True)
                 metadata_bytes, audio_data = data_parts
                 metadata = json.loads(metadata_bytes.decode('utf-8'))
                 preferred_language = metadata.get('preferredLanguage')
                 learning_language = metadata.get('learningLanguage')
                 learning_language_level = metadata.get('learningLanguageLevel')
-
+                logging.error(f"preferred_language: {preferred_language}", exc_info=True)
                 # Fetch the learning language code from the database
                 learning_language_code = await self.get_language_code(learning_language)
                 preferred_language_code = await self.get_language_code(preferred_language)
+                logging.error(f"learning_language_code: {learning_language_code}", exc_info=True)
                 if not learning_language_code:
                     raise ValueError(f"Language '{learning_language}' not found in database.")
 
@@ -92,6 +94,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 await self.send(json.dumps(error_response))
             except Exception as e:
                 print(f"Unexpected error: {e}")
+                logging.error(f"Unexpected error: {e}", exc_info=True)
                 error_response = {"error": "Unexpected processing error."}
                 await self.send(json.dumps(error_response))
 
