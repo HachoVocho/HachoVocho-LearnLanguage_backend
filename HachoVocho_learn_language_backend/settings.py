@@ -154,8 +154,6 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # Use SMTP for production
 DEFAULT_FROM_EMAIL = 'noreply@yourdomain.com'
 
-CSRF_TRUSTED_ORIGINS = [
-    ""
-]
+
 
 SECURE_SSL_REDIRECT = False
