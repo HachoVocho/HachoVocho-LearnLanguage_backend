@@ -48,7 +48,8 @@ INSTALLED_APPS = [
     'modules',
     'language_data',
     'localization',
-    'listening_module'
+    'listening_module',
+    'speaking_module'
 ]
 
 MIDDLEWARE = [
