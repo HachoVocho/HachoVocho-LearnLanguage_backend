@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import UserRoleModel
 from response import Response as ResponseData
+from .serializers import EmailVerificationSerializer
 
 @api_view(["GET"])
 def get_user_roles(request):
@@ -21,3 +22,27 @@ def get_user_roles(request):
             ResponseData.error(str(exception)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+    
+
+
+@api_view(["POST"])
+def email_verification(request):
+    """API to handle email verification"""
+    try:
+        serializer = EmailVerificationSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                ResponseData.success_without_data("Email verified successfully."),
+                status=status.HTTP_200_OK
+            )
+        return Response(
+            ResponseData.error(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return Response(
+            ResponseData.error(str(e)),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+

@@ -19,7 +19,7 @@ class TenantDetailsModel(models.Model):
 
 class TenantEmailVerificationModel(models.Model):
     tenant = models.ForeignKey(TenantDetailsModel, on_delete=models.CASCADE, related_name='tenant_email_verifications')
-    token = models.CharField(max_length=255, unique=True)
+    otp = models.CharField(max_length=255, unique=True)
     is_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     verified_at = models.DateTimeField(null=True, blank=True)

@@ -1,3 +1,32 @@
 from django.shortcuts import render
 
-# Create your views here.
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from .serializers import TenantSignupSerializer
+from response import Response as ResponseData
+
+@api_view(["POST"])
+def tenant_signup(request):
+    """API to handle tenant signup"""
+    try:
+        serializer = TenantSignupSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()  # Save the data to the database
+            return Response(
+                ResponseData.success(
+                    data=serializer.data,
+                    message="Tenant signed up successfully. Please verify your email."
+                ),
+                status=status.HTTP_201_CREATED
+            )
+        return Response(
+            ResponseData.error(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return Response(
+            ResponseData.error(str(e)),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
