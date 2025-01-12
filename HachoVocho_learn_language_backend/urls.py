@@ -24,7 +24,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/users/', include('users.urls')),
     path('api/localization/', include('localization.urls')),
-    path('api/listening/', include('listening_module.urls'))
+    path('api/listening/', include('listening_module.urls')),
+    path('api/speaking/', include('speaking_module.urls'))
 ]
 
 if settings.DEBUG:
