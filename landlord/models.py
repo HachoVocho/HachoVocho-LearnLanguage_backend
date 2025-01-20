@@ -17,6 +17,16 @@ class LandlordDetailsModel(models.Model):
 
     def __str__(self):
         return self.email
+    
+class LandlordEmailVerificationModel(models.Model):
+    landlord = models.ForeignKey(LandlordDetailsModel, on_delete=models.CASCADE, related_name='landlord_email_verifications')
+    otp = models.CharField(max_length=255, unique=True)
+    is_verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=now)
+    verified_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.landlord.email} - Verified: {self.is_verified}"
 
 class LandlordPropertyTypeModel(models.Model):
     type_name = models.CharField(max_length=50, unique=True)

@@ -27,7 +27,7 @@ def get_user_roles(request):
 
 @api_view(["POST"])
 def email_verification(request):
-    """API to handle email verification"""
+    """API to handle email verification for both tenant and landlord."""
     try:
         serializer = EmailVerificationSerializer(data=request.data)
         if serializer.is_valid():
@@ -45,4 +45,4 @@ def email_verification(request):
             ResponseData.error(str(e)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
+    
