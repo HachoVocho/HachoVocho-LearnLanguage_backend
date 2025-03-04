@@ -185,8 +185,6 @@ class LandlordRoomWiseBedModel(models.Model):
     room = models.ForeignKey(LandlordPropertyRoomDetailsModel, on_delete=models.CASCADE, related_name='beds')
     tenant_preference_answers = models.ManyToManyField(LandlordAnswerModel,related_name='tenant_preference_answers')
     bed_number = models.PositiveIntegerField(null=True, blank=True)
-    tenant_preference_same_as = models.CharField(max_length=50,null=True,default=None,blank=True)
-    same_as_bed_id = models.IntegerField(null=True,blank=True,default=-1)
     is_available = models.BooleanField(default=True,blank=True)
     is_rent_monthly = models.BooleanField(default=True)
     min_agreement_duration_in_months = models.IntegerField(null=True,blank=True)
