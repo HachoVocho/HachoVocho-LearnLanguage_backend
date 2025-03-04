@@ -24,7 +24,17 @@ class Response:
 
     @classmethod
     def error(cls, error):
-        """
-        Common error method for API response
-        """
-        return {"success": False, "message": error}
+        # Check if the error is a dictionary
+        print(f'error {error}')
+        if isinstance(error, dict):
+            try:
+                # Extract and format error messages as a single string
+                error_message = " ".join(
+                    [f"{key}: {', '.join(value)}" for key, value in error.items()]
+                )
+            except Exception as e:
+                # Handle potential issues during the formatting
+                error_message = f"Error formatting message: {str(e)}"
+        else:
+            error_message = error
+        return {"success": False, "message": error_message}

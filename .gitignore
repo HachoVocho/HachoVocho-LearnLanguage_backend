@@ -1,3 +1,6 @@
 # .gitignore
 .env
 env
+static
+staticfiles
+media

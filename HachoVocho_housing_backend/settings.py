@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # Quick-start development settings - unsuitable for production
@@ -42,11 +42,21 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     'landlord',
     'tenant',
-    'user'
+    'user',
+    'localization',
+    'payments',
+    'notifications',
+    'chat',
+    'channels',
+    'interest_requests',
+    "landlord_availability",
+    "appointments",
+    "translations"
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    'whitenoise.middleware.WhiteNoiseMiddleware', 
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -125,8 +135,12 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
-STATIC_URL = "static/"
-
+STATIC_URL = '/static/'  # URL prefix for static files
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')  # Directory where static files are collected
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),  # Directory for app-specific static files
+]
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
@@ -135,7 +149,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CSRF_TRUSTED_ORIGINS = [
     'https://*.ngrok-free.app'
 ]
-
 # Email Configuration
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
@@ -145,3 +158,32 @@ EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'False') == 'True'  # Convert string 
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'default_user@example.com')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'default_password')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'default@example.com')
+
+p = "https://api-m.sandbox.paypal.com/v1/oauth2/token"  # or live URL
+PAYPAL_ORDER_API = "https://api-m.sandbox.paypal.com/v2/checkout/orders"  # or live URL
+BRAINTREE_MERCHANT_ID = "yv2kmfsrkjxc86sh"
+BRAINTREE_PUBLIC_KEY = "s6gs69cptwshh56v"
+BRAINTREE_PRIVATE_KEY = "00df0eccae20eb635da7efe673d6722a"
+BRAINTREE_ENVIRONMENT = "Sandbox"  # or 'Production'
+
+ASGI_APPLICATION = 'HachoVocho_housing_backend.asgi.application'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    },
+}
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",  # Redis server URL
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
+        "KEY_PREFIX": "hachovocho",  # Optional: Add a prefix to all cache keys
+    }
+}
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
