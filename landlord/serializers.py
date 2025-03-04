@@ -111,7 +111,7 @@ class LandlordRoomWiseBedSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'bed_number', 'is_available', 'rent_amount',
             'availability_start_date', 'min_agreement_duration_in_months','is_rent_monthly',
-            'bed_media','tenant_preference_same_as','tenant_preference_answers','same_as_bed_id'
+            'bed_media','tenant_preference_answers'
         ]
 
 class LandlordPropertyRoomDetailsSerializer(serializers.ModelSerializer):
@@ -123,7 +123,7 @@ class LandlordPropertyRoomDetailsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'room_size', 'room_type', 'number_of_beds', 
             'number_of_windows', 'max_people_allowed', 'floor', 
-            'location_in_property', 'room_media', 'beds','same_as_room_id'
+            'location_in_property', 'room_media', 'beds'
         ]
 
 class LandlordPropertyDetailSerializer(serializers.ModelSerializer):

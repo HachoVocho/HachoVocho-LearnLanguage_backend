@@ -383,8 +383,6 @@ def add_landlord_property_details(request):
             if len(valid_amenities) != len(amenities_list):
                 return Response({"status": "error", "message": "One or more amenity IDs are invalid."}, status=status.HTTP_400_BAD_REQUEST)
             property_instance.amenities.set(valid_amenities)
-    copyOfBedsData = []
-    copyOfRoomsData = []
     # 7) Rooms
     if rooms_json:
         print(f'rooms_json {rooms_json}')
@@ -450,8 +448,6 @@ def add_landlord_property_details(request):
                 min_agreement_duration_in_months = bd.get("min_agreement_duration_in_months")
                 rent_amount = bd.get("rent_amount")
                 availability_start_date = bd.get("availability_start_date")
-                tenant_preference_same_as = bd.get("tenant_preference_same_as")
-                parts = bd.get('sameAsBedIndexRoomIndex').split(" ")
                 is_available = False if availability_start_date is None else True
                 print('123')
                 if not rent_amount:
@@ -500,7 +496,6 @@ def add_landlord_property_details(request):
                 # Create the bed_instance with conditional values
                 bed_instance = LandlordRoomWiseBedModel.objects.create(
                     room=room_instance,
-                    tenant_preference_same_as=tenant_preference_same_as,
                     bed_number=bed_number,
                     is_available=is_available,
                     rent_amount=rent_amount,
@@ -508,13 +503,6 @@ def add_landlord_property_details(request):
                     is_rent_monthly=is_rent_monthly,
                     min_agreement_duration_in_months= 0 if not is_rent_monthly else min_agreement_duration_in_months
                 )
-                copyOfBedsData.append({
-                    "room_id": room_instance.id,
-                    "bed_id": bed_instance.id,
-                    "sameAsRoomIndex": int(parts[1]) - 1 if len(parts) > 1 and parts[1].isdigit() else -1,
-                    "sameAsBedIndex": int(parts[3]) - 1 if len(parts) > 3 and parts[3].isdigit() else -1,
-                })
-
 
 
                 bed_instance.tenant_preference_answers.set(answer_instances)  # Use .set() AFTER creation
@@ -546,92 +534,6 @@ def add_landlord_property_details(request):
                                 print(f"Created media object for: {file_path} as {media_type}")
                             except Exception as e:
                                 print(f"Error creating media object for {file_path}: {str(e)}")
-            copyOfRoomsData.append({
-                'room_id' : room_instance.id,
-                'sameAsRoomIndex' : rm.get('sameAsRoomIndex')
-            })
-        try:
-            # Retrieve all rooms for the property in a defined order
-            property_rooms = list(property_instance.rooms.all().order_by('id'))
-            print(f"Total property rooms: {len(property_rooms)}")
-
-            for bed_map in copyOfBedsData:
-                try:
-                    # Parse current room and bed IDs from the map
-                    current_bed_id = int(bed_map.get("bed_id", -1))
-                    same_as_room_idx = bed_map.get("sameAsRoomIndex")
-                    same_as_bed_idx = bed_map.get("sameAsBedIndex")
-                except Exception as e:
-                    print(f"Error parsing bed map {bed_map}: {e}")
-                    continue
-
-                # Only update if both sameAs indices are valid (i.e. not -1)
-                if same_as_room_idx != -1 and same_as_bed_idx != -1:
-                    print(f"Processing bed map: {bed_map}")
-                    try:
-                        # Validate that the sameAsRoomIndex is within the property rooms list
-                        if same_as_room_idx < len(property_rooms):
-                            reference_room = property_rooms[same_as_room_idx]
-                            # Get beds for the reference room in a defined order
-                            ref_beds = list(reference_room.beds.filter(is_active=True).order_by('id'))
-                            if same_as_bed_idx < len(ref_beds):
-                                reference_bed = ref_beds[same_as_bed_idx]
-                                try:
-                                    # Fetch the current bed using current_bed_id
-                                    current_bed = LandlordRoomWiseBedModel.objects.get(id=current_bed_id, is_active=True, is_deleted=False)
-                                    current_bed.same_as_bed_id = reference_bed.id
-                                    current_bed.save()
-                                    print(f"Updated bed {current_bed.id}: same_as_bed_id set to {reference_bed.id}")
-                                except Exception as e:
-                                    print(f"Error updating bed with id {current_bed_id}: {str(e)}")
-                            else:
-                                print(f"Invalid sameAsBedIndex {same_as_bed_idx} for reference room (id: {reference_room.id})")
-                        else:
-                            print(f"Invalid sameAsRoomIndex {same_as_room_idx} for property (only {len(property_rooms)} rooms available)")
-                    except Exception as e:
-                        print(f"Error processing bed map {bed_map}: {str(e)}")
-                else:
-                    print(f"Skipping bed update for bed id {current_bed_id} as sameAs indices are invalid (-1)")
-        except Exception as e:
-            print(f"General error updating same_as_bed_id for beds: {str(e)}")
-        try:
-            # Retrieve all rooms for the property in a defined order
-            property_rooms = list(property_instance.rooms.all().order_by('id'))
-            print(f"Total property rooms: {len(property_rooms)}")
-
-            # Process each room mapping in copyOfRoomsData
-            for room_map in copyOfRoomsData:
-                try:
-                    # Parse the current room id and the sameAsRoomIndex from the map
-                    current_room_id = int(room_map.get("room_id", -1))
-                    same_as_room_idx = int(room_map.get("sameAsRoomIndex", -1))
-                except Exception as e:
-                    print(f"Error parsing room map {room_map}: {e}")
-                    continue
-
-                # Only update if sameAsRoomIndex is valid (not -1)
-                if same_as_room_idx != -1:
-                    print(f"Processing room map: {room_map}")
-                    if same_as_room_idx < len(property_rooms):
-                        reference_room = property_rooms[same_as_room_idx]
-                        try:
-                            # Fetch the current room instance
-                            current_room = LandlordPropertyRoomDetailsModel.objects.get(
-                                id=current_room_id, is_active=True, is_deleted=False
-                            )
-                            # Update the current room's same_as_room_id field
-                            current_room.same_as_room_id = reference_room.id
-                            current_room.save()
-                            print(f"Updated room {current_room.id}: same_as_room_id set to {reference_room.id}")
-                        except Exception as e:
-                            print(f"Error updating room with id {current_room_id}: {str(e)}")
-                    else:
-                        print(f"Invalid sameAsRoomIndex {same_as_room_idx} (only {len(property_rooms)} rooms available)")
-                else:
-                    print(f"Skipping room update for room id {current_room_id} as sameAsRoomIndex is invalid (-1)")
-        except Exception as e:
-            print(f"General error updating same_as_room_id for rooms: {str(e)}")
-
         if os.path.exists(base_dir):
             try:
                 shutil.rmtree(base_dir)
@@ -743,7 +645,6 @@ def update_landlord_property_details(request):
                 print(f"General error processing amenities: {str(e)}")
 
         # 6) Handle Rooms and Beds (only if "rooms" key exists)
-        copyOfBedsData = []
         print(f'rooms_data {request.POST.get("rooms")}')
         if "rooms" in request.POST:
             try:
@@ -764,7 +665,6 @@ def update_landlord_property_details(request):
                         r_floor = rm.get("floor")
                         n_windows = rm.get("number_of_windows")
                         max_people = rm.get("max_people_allowed")
-                        same_as_room_id = rm.get("same_as_room_id")
                     except Exception as e:
                         print(f"Error extracting new room data: {str(e)}")
                         continue
@@ -787,7 +687,6 @@ def update_landlord_property_details(request):
 
                     if not created:
                         update_fields = {}
-                        update_fields["same_as_room_id"] = rm.get("same_as_room_id")
                         if "room_type" in rm and room_instance.room_size != rm.get("room_type"):
                             update_fields["room_type"] = room_type_obj
                         if "room_size" in rm and room_instance.room_size != rm.get("room_size"):
@@ -819,7 +718,6 @@ def update_landlord_property_details(request):
                             max_people_allowed=max_people if max_people else None,
                             floor=r_floor if r_floor else None,
                             location_in_property=loc,
-                            same_as_room_id=same_as_room_id
                         )
                     except Exception as e:
                         print(f"Error creating new room: {str(e)}")
@@ -844,7 +742,6 @@ def update_landlord_property_details(request):
                 for b_idx, bd in enumerate(beds_data):
                     try:
                         bed_id = bd.get("id")
-                        parts = bd.get('sameAsBedIndexRoomIndex').split(" ")
                     except Exception as e:
                         print(f"Error extracting bed id: {str(e)}")
                         continue
@@ -859,7 +756,6 @@ def update_landlord_property_details(request):
                         print(f'bed_tenant_same_as_value {bd.get("tenant_preference_same_as")}')
                         if not created:
                             update_fields = {}
-                            update_fields["tenant_preference_same_as"] = bd.get("tenant_preference_same_as")
                             if "rent_amount" in bd and bed_instance.rent_amount != bd.get("rent_amount"):
                                 update_fields["rent_amount"] = bd.get("rent_amount")
                             if "availability_start_date" in bd and bed_instance.availability_start_date != bd.get("availability_start_date"):
@@ -869,7 +765,6 @@ def update_landlord_property_details(request):
                             if "min_agreement_duration_in_months" in bd and bed_instance.min_agreement_duration_in_months != bd.get("min_agreement_duration_in_months"):
                                 update_fields["min_agreement_duration_in_months"] = bd.get("min_agreement_duration_in_months")
                             if update_fields:
-                                update_fields["same_as_bed_id"] = bd.get("same_as_bed_id")
                                 try:
                                     LandlordRoomWiseBedModel.objects.filter(id=bed_id).update(**update_fields)
                                     print(f"Updated bed {bed_id} with {update_fields}")
@@ -883,8 +778,6 @@ def update_landlord_property_details(request):
                             min_agreement_duration_in_months = bd.get("min_agreement_duration_in_months")
                             rent_amount = bd.get("rent_amount")
                             availability_start_date = bd.get("availability_start_date")
-                            tenant_preference_same_as = bd.get("tenant_preference_same_as")
-                            same_as_bed_id = bd.get("same_as_bed_id")
                             is_available = False if availability_start_date is None else True
                             print('Creating new bed...')
                         except Exception as e:
@@ -896,11 +789,9 @@ def update_landlord_property_details(request):
                         try:
                             bed_instance = LandlordRoomWiseBedModel.objects.create(
                                 room=room_instance,
-                                tenant_preference_same_as=tenant_preference_same_as,
                                 bed_number=bed_number,
                                 is_available=is_available,
                                 rent_amount=rent_amount,
-                                same_as_bed_id=same_as_bed_id,
                                 availability_start_date=None if availability_start_date == "" else availability_start_date,
                                 is_rent_monthly=is_rent_monthly,
                                 min_agreement_duration_in_months= 0 if not is_rent_monthly else min_agreement_duration_in_months
@@ -993,56 +884,6 @@ def update_landlord_property_details(request):
                             except Exception as e:
                                 print(f"Error updating/creating answer for question {question_id} with option {option_id}: {str(e)}")
                     print(f"Finished processing bed {b_idx} for room {idx}")
-                copyOfBedsData.append({
-                    "room_id": room_instance.id,
-                    "bed_id": bed_instance.id,
-                    "sameAsRoomIndex": int(parts[1]) - 1 if len(parts) > 1 and parts[1].isdigit() else -1,
-                    "sameAsBedIndex": int(parts[3]) - 1 if len(parts) > 3 and parts[3].isdigit() else -1,
-                })
-            try:
-                # Retrieve all rooms for the property in a defined order
-                property_rooms = list(property_instance.rooms.all().order_by('id'))
-                print(f"Total property rooms: {len(property_rooms)}")
-
-                for bed_map in copyOfBedsData:
-                    try:
-                        # Parse current room and bed IDs from the map
-                        current_bed_id = int(bed_map.get("bed_id", -1))
-                        same_as_room_idx = bed_map.get("sameAsRoomIndex")
-                        same_as_bed_idx = bed_map.get("sameAsBedIndex")
-                    except Exception as e:
-                        print(f"Error parsing bed map {bed_map}: {e}")
-                        continue
-
-                    # Only update if both sameAs indices are valid (i.e. not -1)
-                    if same_as_room_idx != -1 and same_as_bed_idx != -1:
-                        print(f"Processing bed map: {bed_map}")
-                        try:
-                            # Validate that the sameAsRoomIndex is within the property rooms list
-                            if same_as_room_idx < len(property_rooms):
-                                reference_room = property_rooms[same_as_room_idx]
-                                # Get beds for the reference room in a defined order
-                                ref_beds = list(reference_room.beds.filter(is_active=True).order_by('id'))
-                                if same_as_bed_idx < len(ref_beds):
-                                    reference_bed = ref_beds[same_as_bed_idx]
-                                    try:
-                                        # Fetch the current bed using current_bed_id
-                                        current_bed = LandlordRoomWiseBedModel.objects.get(id=current_bed_id, is_active=True, is_deleted=False)
-                                        current_bed.same_as_bed_id = reference_bed.id
-                                        current_bed.save()
-                                        print(f"Updated bed {current_bed.id}: same_as_bed_id set to {reference_bed.id}")
-                                    except Exception as e:
-                                        print(f"Error updating bed with id {current_bed_id}: {str(e)}")
-                                else:
-                                    print(f"Invalid sameAsBedIndex {same_as_bed_idx} for reference room (id: {reference_room.id})")
-                            else:
-                                print(f"Invalid sameAsRoomIndex {same_as_room_idx} for property (only {len(property_rooms)} rooms available)")
-                        except Exception as e:
-                            print(f"Error processing bed map {bed_map}: {str(e)}")
-                    else:
-                        print(f"Skipping bed update for bed id {current_bed_id} as sameAs indices are invalid (-1)")
-            except Exception as e:
-                print(f"General error updating same_as_bed_id for beds: {str(e)}")
         return Response(
             {"status": "success", "message": "Property details updated successfully."},
             status=status.HTTP_200_OK
@@ -1233,15 +1074,6 @@ def get_landlord_property_details(request):
         room["room_media"] = [
             media["file"] for media in room.get("room_media", [])
         ]
-        same_as_room_id = room.get("same_as_room_id", -1)
-        if same_as_room_id != -1:
-            # Find the index of the room with id equal to same_as_room_id
-            same_room_index = next(
-                (idx for idx, r in enumerate(response_data['rooms']) if r.get('id') == same_as_room_id),
-                None
-            )
-            if same_room_index is not None:
-                room["sameAsRoomIndex"] = same_room_index
 
         for bed_index, bed in enumerate(room.get('beds', [])):
             # Convert bed_media => list of files
@@ -1257,15 +1089,6 @@ def get_landlord_property_details(request):
             if len(tenant_answers) != 0:
                 bed['bed_tenant_preference'] = f"Room {room_index + 1} Bed {bed_index + 1} Preference"
             grouped_answers = {}
-            same_as_bed_id = bed.get("same_as_bed_id", -1)
-            if same_as_bed_id != -1:
-                same_bed_index = next(
-                    (idx for idx, b in enumerate(room['beds']) if b.get('id') == same_as_bed_id),
-                    None
-                )
-                if same_bed_index is not None:
-                    bed["sameAsBedIndexRoomIndex"] = f"Room {room_index + 1} Bed {same_bed_index + 1}"
-
             for answer in tenant_answers:
                 print(f'answer {answer}')
                 question_id = answer["question"]["id"]
