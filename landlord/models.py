@@ -106,7 +106,6 @@ class LandlordPropertyRoomDetailsModel(models.Model):
     number_of_beds = models.PositiveIntegerField(null=True, blank=True)
     number_of_windows = models.PositiveIntegerField(null=True, blank=True)
     max_people_allowed = models.PositiveIntegerField(null=True, blank=True)
-    same_as_room_id = models.IntegerField(null=True,blank=True,default=-1)
     floor = models.PositiveIntegerField(null=True, blank=True)
     location_in_property = models.CharField(
         max_length=50,
