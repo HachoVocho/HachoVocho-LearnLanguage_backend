@@ -1,5 +1,6 @@
 from django.contrib import admin
 from .models import (
+    OTPModel,
     UserRoleModel,
     OccupationModel,
     ReligionModel,
@@ -100,3 +101,10 @@ class FoodHabitModelAdmin(admin.ModelAdmin):
     search_fields = ('title',)  # Search functionality
     list_filter = ('is_active', 'is_deleted')  # Filters for the sidebar
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
+
+@admin.register(OTPModel)
+class OTPModelAdmin(admin.ModelAdmin):
+    list_display = ('phone_number', 'otp', 'role_name', 'is_verified', 'created_at', 'verified_at')
+    search_fields = ('phone_number', 'otp', 'role_name')
+    list_filter = ('role_name', 'is_verified')
+    readonly_fields = ('created_at', 'verified_at')

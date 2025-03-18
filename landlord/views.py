@@ -17,7 +17,7 @@ from django.core.files import File
 from django.db.models import Prefetch
 from django.contrib.contenttypes.models import ContentType
 from .models import LandlordQuestionModel, LandlordAnswerModel, LandlordRoomWiseBedModel
-from .serializers import AddIdentityDocumentSerializer, LandlordDocumentTypeSerializer, LandlordIdentityDocumentSerializer, LandlordPreferenceAnswerSerializer, LandlordProfileRequestSerializer, LandlordPropertyDetailRequestSerializer, LandlordPropertyDetailSerializer, LandlordQuestionRequestSerializer, LandlordSignupSerializer, PropertyListRequestSerializer, TenantInterestRequestSerializer, UpdateLandlordProfileSerializer
+from .serializers import AddIdentityDocumentSerializer, LandlordDocumentTypeSerializer, LandlordIdentityDocumentSerializer, LandlordPreferenceAnswerSerializer, LandlordProfileRequestSerializer, LandlordPropertyDetailRequestSerializer, LandlordPropertyDetailSerializer, LandlordQuestionRequestSerializer, LandlordSignupSerializer, PropertyListRequestSerializer, TenantInterestRequestSerializer, ToggleActiveStatusSerializer, UpdateLandlordProfileSerializer
 from rest_framework.parsers import MultiPartParser, FormParser
 
 @api_view(["POST"])
@@ -211,11 +211,11 @@ def get_preference_questions(request):
 
             if answers.exists():
                 for answer in answers:
-                    if answer.selected_option is None:
+                    if answer.object_id is None:
                         continue  # Skip this answer if there's no selected option
                     # For each answer, return the selected option and the preference
                     question_data['answers'].append({
-                        'option_id': answer.selected_option.id,
+                        'option_id': answer.object_id,
                         'preference': answer.preference
                     })
         
@@ -508,7 +508,7 @@ def add_landlord_property_details(request):
                 bed_instance.tenant_preference_answers.set(answer_instances)  # Use .set() AFTER creation
                 print(f'Answer Instances: {answer_instances}')
                 for answer in bed_instance.tenant_preference_answers.all():
-                    print(f'Answer ID: {answer.id}, Question: {answer.question.question_text}, Selected Option: {answer.selected_option}')
+                    print(f'Answer ID: {answer.id}, Question: {answer.question.question_text}, Selected Option: {answer.object_id}')
                 # 7.3) Bed media
                 # Expecting form fields like room_0_bed_0_images[], room_0_bed_0_videos[], etc.
                 print(f'base_dir123 {base_dir}')
@@ -893,8 +893,6 @@ def update_landlord_property_details(request):
         return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
-
 @api_view(["POST"])
 def get_property_types_and_amenities(request):
     """
@@ -1019,7 +1017,8 @@ def get_landlord_property_details(request):
         'rooms__room_media',
         Prefetch(
             'rooms__beds',
-            queryset=LandlordRoomWiseBedModel.objects.filter(is_active=True)  # Only active beds
+            queryset=LandlordRoomWiseBedModel.objects.filter(is_deleted=False)  # Only active beds
+            .order_by('bed_number')
             .prefetch_related('bed_media', 'tenant_preference_answers')
         )
     ).first()
@@ -1083,6 +1082,7 @@ def get_landlord_property_details(request):
 
     # STEP 7: (Example) Modify response to group tenant_preference_answers
     for room_index, room in enumerate(response_data.get('rooms', [])):
+        room["is_active"] = room.get('is_active')
         for bed_index, bed in enumerate(room.get('beds', [])):
             
             tenant_answers = bed.get('tenant_preference_answers', [])
@@ -1092,7 +1092,7 @@ def get_landlord_property_details(request):
             for answer in tenant_answers:
                 print(f'answer {answer}')
                 question_id = answer["question"]["id"]
-                option_id = answer["selected_option"]["id"] if answer["selected_option"] else None
+                option_id = answer["object_id"] if answer["object_id"] else None
                 preference = answer["preference"]
                 
                 if option_id is None:
@@ -1121,13 +1121,25 @@ def get_landlord_property_details(request):
                     all_option_ids = content_model.objects.filter(is_active=True, is_deleted=False).values_list("id", flat=True)
                         
                 print(f'all_option_ids {all_option_ids}')
-                # Determine unselected indices **only for this question**
+                print(f'grouped_answers {grouped_answers}')
+                grouped_answers[question_id]["selected_option_indices"] = [
+                    d["id"] if isinstance(d, dict) else d
+                    for d in grouped_answers[question_id]["selected_option_indices"]
+                ]
+
+                grouped_answers[question_id]["priority_order"] = [
+                    d["id"] if isinstance(d, dict) else d
+                    for d in grouped_answers[question_id]["priority_order"]
+                ]
+
                 selected_options = set(grouped_answers[question_id]["selected_option_indices"])
+
                 grouped_answers[question_id]["unselected_indices"] = [
                     option for option in all_option_ids if option not in selected_options
                 ]
 
             bed["tenant_preference_answers"] = list(grouped_answers.values())
+            bed["is_active"] = bed.get('is_active')
 
     # STEP 8: Return final response
     return Response(
@@ -1667,3 +1679,58 @@ def update_uploaded_landlord_media_selection(request):
     except Exception as e:
         print(f"General Error in Update Media API: {str(e)}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(["POST"])
+def toggle_active_status(request):
+    """
+    API to update the is_active status of a room or bed.
+    Expects a POST request with either 'room_id' or 'bed_id'. 
+    For a room update, room_id should not be -1.
+    For a bed update, bed_id should not be -1.
+    The operation toggles the is_active boolean.
+    """
+    print(f'request.params {request.data}')
+    serializer = ToggleActiveStatusSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(
+            ResponseData.error(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    room_id = serializer.validated_data.get("room_id", -1)
+    bed_id = serializer.validated_data.get("bed_id", -1)
+
+    if room_id != -1:
+        room = LandlordPropertyRoomDetailsModel.objects.filter(
+            id=room_id, is_deleted=False
+        ).first()
+        if not room:
+            return Response(
+                ResponseData.error("Invalid room ID."),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # Toggle is_active value
+        room.is_active = not room.is_active
+        room.save()
+    elif bed_id != -1:
+        bed = LandlordRoomWiseBedModel.objects.filter(
+            id=bed_id, is_deleted=False
+        ).first()
+        if not bed:
+            return Response(
+                ResponseData.error("Invalid bed ID."),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # Toggle is_active value
+        bed.is_active = not bed.is_active
+        bed.save()
+    else:
+        return Response(
+            ResponseData.error("Either a valid room_id or bed_id is required."),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    return Response(
+        ResponseData.success_without_data("State updated successfully."),
+        status=status.HTTP_200_OK
+    )

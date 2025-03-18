@@ -97,3 +97,18 @@ class FoodHabitModel(models.Model):
     def __str__(self):
         return self.title
     
+
+class OTPModel(models.Model):
+    ROLE_CHOICES = [
+        ('tenant', 'Tenant'),
+        ('landlord', 'Landlord'),
+    ]
+    role_name = models.CharField(max_length=20, choices=ROLE_CHOICES, unique=True)
+    phone_number = models.CharField(max_length=15, unique=True)
+    otp = models.CharField(max_length=6)
+    is_verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=now)
+    verified_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.phone_number} - {self.otp}"

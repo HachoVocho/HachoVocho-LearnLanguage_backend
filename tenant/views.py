@@ -5,9 +5,13 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from datetime import timedelta
 # At the top of your views.py
 from django.db.models import Prefetch  # Add this import
 from landlord.models import LandlordDetailsModel, LandlordPropertyRoomDetailsModel, LandlordRoomWiseBedModel
+from payments.models import TenantPaymentModel
+from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
+from translations.models import LanguageModel
 from .serializers import PropertyDetailRequestSerializer
 from localization.models import CityModel, CountryModel
 from .serializers import AddIdentityDocumentSerializer, TenantDocumentTypeSerializer, TenantIdentityDocumentSerializer, TenantIdentityDocumentUpdateSerializer, TenantPreferenceAnswerSerializer, TenantPreferenceQuestionsAnswersRequestSerializer, TenantProfileRequestSerializer, TenantQuestionSerializer, TenantSignupSerializer
@@ -57,38 +61,46 @@ def tenant_signup(request):
     try:
         print(request.data)
         serializer = TenantSignupSerializer(data=request.data)
-
         # Validate incoming data
         if serializer.is_valid():
-            # Check if the email exists in the TenantDetailsModel
+            # Get the language code from request (if provided) for translation lookup
+            language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
+            if not language_code:
+                language_code = DEFAULT_LANGUAGE_CODE
             email = serializer.validated_data['email']
-            landlord = LandlordDetailsModel.objects.filter(email=email,is_active=True).first()
+            # First check if the email exists for a landlord
+            landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
             if landlord is not None:
+                message = get_translation("ERR_EMAIL_EXISTS_FOR_LANDLORD", language_code)
                 return Response(
-                    ResponseData.error("This email already exists for landlord"),
+                    ResponseData.error(message),
                     status=status.HTTP_200_OK
                 )
             tenant = TenantDetailsModel.objects.filter(email=email).first()
 
-            # If the tenant exists
+            # Try to get language for the tenant from the request if provided
+            preferred_language = None
+            try:
+                preferred_language = LanguageModel.objects.get(code=language_code)
+            except LanguageModel.DoesNotExist:
+                preferred_language = None
+
+            # If the tenant exists but is not active
             if tenant is not None and tenant.is_active is False:
                 # Check for existing, unverified OTP
                 tenant_verification = TenantEmailVerificationModel.objects.filter(
                     tenant=tenant,
                     is_verified=False
                 ).first()
-
-                # If OTP exists and is unverified, generate a new OTP and send email
+                otp = str(random.randint(100000, 999999))  # Generate OTP
                 if tenant_verification:
-                    otp = str(random.randint(100000, 999999))  # Generate new OTP
+                    # Generate a new OTP and send email
                     tenant_verification.otp = otp
                     tenant_verification.created_at = now()
                     tenant_verification.save()
                     send_otp_email(tenant.email, otp)
-
                 else:
-                    # No unverified OTP, generate and send a new one
-                    otp = str(random.randint(100000, 999999))  # Generate OTP
+                    # No unverified OTP exists; create a new verification entry
                     TenantEmailVerificationModel.objects.create(
                         tenant=tenant,
                         otp=otp,
@@ -96,46 +108,52 @@ def tenant_signup(request):
                         created_at=now()
                     )
                     send_otp_email(tenant.email, otp)
-
+                message = get_translation("SUCC_TENANT_OTP_SENT", language_code)
                 return Response(
-                    ResponseData.success_without_data(
-                        "Tenant exists. A new OTP has been sent for verification."
-                    ),
+                    ResponseData.success_without_data(message),
                     status=status.HTTP_200_OK
                 )
             elif tenant is not None and tenant.is_active is True:
+                message = get_translation("ERR_EMAIL_EXISTS", language_code)
                 return Response(
-                    ResponseData.error(
-                        "This email already exists for tenant and is verified"
-                    ),
+                    ResponseData.error(message),
                     status=status.HTTP_200_OK
                 )
             else:
                 # If the tenant doesn't exist, create a new tenant
                 validated_data = serializer.validated_data
-                validated_data['password'] = make_password(validated_data['password'])  # Hash password
-                tenant = TenantDetailsModel.objects.create(**validated_data)
-
-                # Generate OTP for the new tenant
-                otp = str(random.randint(100000, 999999))  # 6-digit OTP
-                TenantEmailVerificationModel.objects.create(
-                    tenant=tenant,
-                    otp=otp,
-                    is_verified=False,
-                    created_at=now()
-                )
-
-                # Send OTP email
-                send_otp_email(tenant.email, otp)
-
-                return Response(
-                    ResponseData.success_without_data(
-                        "Tenant signed up successfully. Please verify your email."
-                    ),
-                    status=status.HTTP_201_CREATED
-                )
-
-        # If the serializer validation fails
+                print(f"validated_data {validated_data}")
+                if validated_data['password'] != '':
+                    validated_data['password'] = make_password(validated_data['password'])
+                    # If a preferred language is found, add it to the data
+                    if preferred_language:
+                        validated_data['preferred_language'] = preferred_language
+                    tenant = TenantDetailsModel.objects.create(**validated_data)
+                    # Generate OTP for the new tenant
+                    otp = str(random.randint(100000, 999999))
+                    TenantEmailVerificationModel.objects.create(
+                        tenant=tenant,
+                        otp=otp,
+                        is_verified=False,
+                        created_at=now()
+                    )
+                    send_otp_email(tenant.email, otp)
+                    message = get_translation("SUCC_TENANT_SIGNUP_VERIFY", language_code)
+                    return Response(
+                        ResponseData.success(tenant.id, message),
+                        status=status.HTTP_201_CREATED
+                    )
+                else:
+                    # If no password is provided, create tenant as active directly.
+                    if preferred_language:
+                        validated_data['preferred_language'] = preferred_language
+                    tenant = TenantDetailsModel.objects.create(**validated_data, is_active=True)
+                    message = get_translation("SUCC_TENANT_SIGNUP", language_code)
+                    return Response(
+                        ResponseData.success(tenant.id, message),
+                        status=status.HTTP_201_CREATED
+                    )
+        # If the serializer validation fails, return errors
         error_message = " ".join(
             [f"{key}: {', '.join(value)}" for key, value in serializer.errors.items()]
         )
@@ -143,7 +161,6 @@ def tenant_signup(request):
             ResponseData.error(error_message),
             status=status.HTTP_409_CONFLICT
         )
-
     except Exception as e:
         return Response(
             ResponseData.error(str(e)),
@@ -188,7 +205,7 @@ def save_tenant_preferences(request):
             ResponseData.error('Invalid tenant ID or tenant is not active.'),
             status=status.HTTP_400_BAD_REQUEST
         )
-
+    print(f'answersvvv {answers}')
     for answer in answers:
         question_id = answer.get("question_id")
         selected_answers = answer.get("answers")
@@ -200,14 +217,20 @@ def save_tenant_preferences(request):
                 ResponseData.error(f"Invalid question ID: {question_id}"),
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+        existing_answers = TenantPreferenceAnswerModel.objects.filter(
+            tenant=tenant,
+            question=question
+        )
+        selected_option_ids = [opt if isinstance(opt, int) else opt.get("option_id") for opt in selected_answers]
+        options_to_remove = existing_answers.exclude(option_id__in=selected_option_ids)
+        print(f'options_to_removevv {options_to_remove}')
+        options_to_remove.delete()
         # Process each selected answer
         for selected_answer in selected_answers:
             if isinstance(selected_answer, dict):
                 # Priority-based answers
                 option_id = selected_answer.get("option_id")
                 priority = selected_answer.get("priority")
-
                 # Validate option existence
                 option = TenantPreferenceOptionModel.objects.filter(id=option_id, question=question).first()
                 if not option:
@@ -215,7 +238,6 @@ def save_tenant_preferences(request):
                         ResponseData.error(f"Invalid option ID: {option_id} for question ID: {question_id}"),
                         status=status.HTTP_400_BAD_REQUEST
                     )
-
                 # Check if an answer already exists
                 preference_answer, created = TenantPreferenceAnswerModel.objects.update_or_create(
                     tenant=tenant,
@@ -225,10 +247,6 @@ def save_tenant_preferences(request):
                 )
 
             else:
-                existing_answers = TenantPreferenceAnswerModel.objects.filter(
-                    tenant=tenant,
-                    question=question
-                )
                 # Single or Multiple choice answers
                 option_id = selected_answer
 
@@ -239,12 +257,6 @@ def save_tenant_preferences(request):
                         ResponseData.error(f"Invalid option ID: {option_id} for question ID: {question_id}"),
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                # Find options to remove (those not in selected_answers)
-                selected_option_ids = [opt if isinstance(opt, int) else opt.get("option_id") for opt in selected_answers]
-                options_to_remove = existing_answers.exclude(option_id__in=selected_option_ids)
-
-                # Remove options that are no longer selected
-                options_to_remove.delete()
                 # Check if an answer already exists
                 preference_answer, created = TenantPreferenceAnswerModel.objects.update_or_create(
                     tenant=tenant,
@@ -292,6 +304,7 @@ def get_tenant_preference_questions_answers(request):
     # Step 4: Prepare the response data
     data = []
     for question in questions:
+        # Initialize question data structure without options yet
         question_data = {
             'id': question.id,
             'question_text': question.question_text,
@@ -299,13 +312,7 @@ def get_tenant_preference_questions_answers(request):
                 'id': question.question_type.id,
                 'type_name': question.question_type.type_name,
                 'description': question.question_type.description
-            },
-            'question_options': [
-                {
-                    'id': option.id,
-                    'option_text': option.option_text
-                } for option in question.question_options.all()
-            ]
+            }
         }
         
         # Fetch answers for this question by the tenant, if any
@@ -316,12 +323,34 @@ def get_tenant_preference_questions_answers(request):
             is_deleted=False
         ).order_by('priority')
         
+        # Build a list of selected option IDs based on the question type.
+        selected_option_ids = []
+        if answers.exists():
+            if question.question_type.type_name in ['single_mcq', 'multiple_mcq', 'priority_based']:
+                selected_option_ids = [answer.option.id for answer in answers]
+        
+        # Separate the question options into selected and unselected lists.
+        selected_options = []
+        unselected_options = []
+        for option in question.question_options.all():
+            option_data = {
+                'id': option.id,
+                'option_text': option.option_text
+            }
+            if option.id in selected_option_ids:
+                selected_options.append(option_data)
+            else:
+                unselected_options.append(option_data)
+        
+        # Add the separated lists into the question data.
+        question_data['selected_options'] = selected_options
+        question_data['unselected_options'] = unselected_options
+        
+        # Optionally, include raw answer data if needed:
         if answers.exists():
             if question.question_type.type_name in ['single_mcq', 'multiple_mcq']:
-                # For single or multiple MCQs, return a list of selected option IDs
-                question_data['answers'] = [answer.option.id for answer in answers]
+                question_data['answers'] = selected_option_ids
             elif question.question_type.type_name == 'priority_based':
-                # For priority-based questions, return a list of dictionaries with option_id and priority
                 question_data['answers'] = [
                     {
                         'option_id': answer.option.id,
@@ -336,6 +365,7 @@ def get_tenant_preference_questions_answers(request):
         ResponseData.success(data, "Tenant preferences fetched successfully."),
         status=status.HTTP_200_OK
     )
+
 
 @api_view(["POST"])
 def get_tenant_profile_details(request):
@@ -513,7 +543,7 @@ def get_tenant_profile_details(request):
     if personality and personality.socializing_habit: filled_personality += 1
     if personality and personality.relationship_status: filled_personality += 1
     if personality and personality.food_habit: filled_personality += 1
-    if personality and personality.pet_lover: filled_personality += 1
+    #if personality and personality.pet_lover: filled_personality += 1
     personality_completion = int((filled_personality / total_personality_fields) * 100)
 
     # Step 8: Basic logic to suggest which document is needed based on occupation title
@@ -936,7 +966,8 @@ def get_properties_by_city_overview(request):
             "media": all_media,  # ✅ All media (property + rooms + beds)
             "available_beds": available_beds,  # ✅ List of available beds with details
         }
-        property_list.append(property_data)
+        if len(available_beds) != 0:
+            property_list.append(property_data)
 
     data = {
         "preferred_city_name": city_name,
@@ -947,7 +978,6 @@ def get_properties_by_city_overview(request):
         ResponseData.success(data, "Properties fetched successfully"),
         status=status.HTTP_200_OK
     )
-
 
 
 @api_view(["POST"])
@@ -1000,7 +1030,7 @@ def get_property_details(request):
     serializer = PropertyDetailRequestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
-            ResponseData.error("Validation error", serializer.errors),
+            ResponseData.error(serializer.errors),
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -1051,7 +1081,17 @@ def get_property_details(request):
     amenities = [
         amenity.name for amenity in prop.amenities.filter(is_active=True)
     ]
-
+    # Fetch the tenant to check phone verification and payment status.
+    tenant = TenantDetailsModel.objects.filter(id=tenant_id).first()
+    is_phone_verified = bool(tenant and tenant.phone_number)
+    payment = None
+    is_payment_active = False
+    if tenant:
+        payment = TenantPaymentModel.objects.filter(
+            tenant=tenant, is_active=True, is_deleted=False
+        ).order_by('-paid_at').first()
+        if payment and (payment.paid_at + timedelta(days=30) > now()):
+            is_payment_active = True
     # Room details
     rooms_data = []
     for room in prop.rooms.all():
@@ -1065,18 +1105,21 @@ def get_property_details(request):
                 {"url": bm.file.url, "type": bm.media_type}
                 for bm in bed.bed_media.filter(is_active=True)
             ]
-                
-            start_date_str = datetime.strftime(bed.availability_start_date, "%d %b %y")
-            beds_data.append({
-                "bed_id": bed.id,
-                "bed_number": bed.bed_number,
-                "is_available": bed.is_available,
-                "is_rent_monthly": bed.is_rent_monthly,
-                "min_agreement_duration_in_months": str(bed.min_agreement_duration_in_months),
-                "rent_amount": str(bed.rent_amount),
-                "availability_start_date": start_date_str,
-                "bed_media": bed_media,
-            })
+            start_date_str = ''
+            if bed.availability_start_date is not None:
+                start_date_str = datetime.strftime(bed.availability_start_date, "%d %b %y")
+                beds_data.append({
+                    "bed_id": bed.id,
+                    "bed_number": bed.bed_number,
+                    "is_available": bed.is_available,
+                    "is_rent_monthly": bed.is_rent_monthly,
+                    "min_agreement_duration_in_months": str(bed.min_agreement_duration_in_months),
+                    "rent_amount": str(bed.rent_amount),
+                    "availability_start_date": start_date_str,
+                    "bed_media": bed_media,
+              "is_phone_verified": is_phone_verified,
+                "is_payment_active": is_payment_active,
+                })
 
         rooms_data.append({
             "room_id": room.id,

@@ -1,10 +1,18 @@
 from django.urls import path
-from .views import forgot_password, get_user_roles, email_verification, login, update_password
+from .views import (
+    forgot_password, 
+    email_verification, 
+    login, 
+    update_password,
+    send_otp,
+    verify_otp
+)
 
 urlpatterns = [
-    path('get_roles/', get_user_roles, name='get-user-roles'),
     path('email_verification/', email_verification, name='email-verification'),
-    path('login/', login, name='login'),  # Added the login path
-    path('forgot_password/', forgot_password, name='forgot_password'),  # Added the login path
-    path('update_password/', update_password, name='update_password'),  # Added the login path
+    path('login/', login, name='login'),
+    path('forgot_password/', forgot_password, name='forgot_password'),
+    path('update_password/', update_password, name='update_password'),
+    path('send_otp_for_mobile/', send_otp, name='send-otp'),
+    path('verify_otp_for_mobile/', verify_otp, name='verify-otp'),
 ]

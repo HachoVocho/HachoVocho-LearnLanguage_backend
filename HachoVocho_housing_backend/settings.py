@@ -100,6 +100,9 @@ DATABASES = {
     }
 }
 
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID', 'default_db_name'),
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY', 'default_db_name'),
+AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION', 'default_db_name'),
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

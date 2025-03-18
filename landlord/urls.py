@@ -3,7 +3,7 @@ from .views import (
     add_identity_document, add_landlord_property_details, delete_identity_document, get_all_identity_documents, get_profile_details, get_preference_questions,
     get_property_types_and_amenities, landlord_signup,
     save_landlord_preferences, get_landlord_properties,
-    get_landlord_property_details, update_identity_document, update_landlord_property_details, update_profile_details, update_uploaded_landlord_media_selection, upload_landlord_media_selection,
+    get_landlord_property_details, toggle_active_status, update_identity_document, update_landlord_property_details, update_profile_details, update_uploaded_landlord_media_selection, upload_landlord_media_selection,
 )
 
 urlpatterns = [
@@ -23,4 +23,5 @@ urlpatterns = [
     path('delete_identity_document/', delete_identity_document, name='delete_identity_document'),
     path('upload_landlord_media_selection/', upload_landlord_media_selection, name='upload_landlord_media_selection'),
     path('update_uploaded_landlord_media_selection/', update_uploaded_landlord_media_selection, name='update_uploaded_landlord_media_selection'),
+    path('toggle_active_status/', toggle_active_status, name='toggle_active_status'),
 ]

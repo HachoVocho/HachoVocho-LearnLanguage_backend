@@ -13,6 +13,7 @@ urlpatterns = [
     path('landlord_availability/', include('landlord_availability.urls')),
     path('appointments/', include('appointments.urls')),
     path('translations/', include('translations.urls')),
+    path('interest_requests/', include('interest_requests.urls')),
 ]
 
 # Serve static and media files in development

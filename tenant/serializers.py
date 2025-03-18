@@ -13,13 +13,27 @@ class TenantSignupSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(max_length=50)
     last_name = serializers.CharField(max_length=50)
     email = serializers.EmailField()
-    password = serializers.CharField(max_length=128, write_only=True)
+    password = serializers.CharField(
+        max_length=128,
+        write_only=True,
+        style={'input_type': 'password'},
+        allow_blank=True
+    )
+
     class Meta:
         model = TenantDetailsModel
         fields = ['first_name', 'last_name', 'email', 'password']
         extra_kwargs = {
-            'password': {'write_only': True}  # Password should not be readable
+            'password': {'write_only': True}
         }
+
+    def validate_password(self, value):
+        # Allow empty password string without throwing an error.
+        # Optionally, if not empty, you might want to check for a minimum length.
+        if value != "" and len(value) < 6:
+            raise serializers.ValidationError("Password must be at least 6 characters.")
+        return value
+
 
 # Serializer for Question Type (Single, Multiple, Priority)
 class TenantQuestionTypeSerializer(serializers.ModelSerializer):

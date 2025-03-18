@@ -1,4 +1,6 @@
 from django.contrib import admin
+
+from localization.models import CityModel
 from .models import (
     TenantDetailsModel,
     TenantEmailVerificationModel,
@@ -14,12 +16,16 @@ from .models import (
 
 @admin.register(TenantDetailsModel)
 class TenantDetailsAdmin(admin.ModelAdmin):
-    list_display = ('id', 'first_name', 'last_name', 'email', 'preferred_city', 'is_active', 'created_at')
+    list_display = ('id', 'first_name', 'last_name', 'email', 'is_active', 'created_at', 'phone_number')
     search_fields = ('email', 'first_name', 'last_name')
     list_filter = ('is_active', 'is_deleted')
-    readonly_fields = ('created_at', 'deleted_at')
 
-
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "preferred_city":
+            # Limit the queryset to only 10 entries.
+            kwargs["queryset"] = CityModel.objects.all()[:10]
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+    
 @admin.register(TenantEmailVerificationModel)
 class TenantEmailVerificationModelAdmin(admin.ModelAdmin):
     list_display = ('tenant', 'otp', 'is_verified')

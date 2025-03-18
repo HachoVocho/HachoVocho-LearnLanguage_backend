@@ -9,7 +9,7 @@ class TenantDetailsModel(models.Model):
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     email = models.EmailField(unique=True)
-    password = models.CharField(max_length=128)
+    password = models.CharField(max_length=128,blank=True,null=True)
     phone_number = models.CharField(max_length=15, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     profile_picture = models.FileField(upload_to="static/profile_pictures/",null=True,blank=True)
@@ -70,7 +70,7 @@ class TenantDocumentTypeModel(models.Model):
 class TenantIdentityVerificationModel(models.Model):
     tenant = models.ForeignKey(TenantDetailsModel, on_delete=models.CASCADE, related_name='identity_verifications')
     document_type = models.ForeignKey(TenantDocumentTypeModel, on_delete=models.CASCADE, related_name='document_type')
-    document_number = models.CharField(max_length=100, unique=True)
+    document_number = models.CharField(max_length=100, null=True, blank=True)
     verification_status = models.CharField(
         max_length=20,
         choices=[

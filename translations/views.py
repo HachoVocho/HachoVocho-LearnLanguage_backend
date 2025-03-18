@@ -115,12 +115,12 @@ def get_translations(request):
         }, status=status.HTTP_400_BAD_REQUEST)
     
     # Generate a unique cache key for the language code
-    cache_key = f"translations_{language_code}"
+    #cache_key = f"translations_{language_code}"
     
     # Try to fetch translations from the cache
-    cached_data = cache.get(cache_key)
+    #cached_data = cache.get(cache_key)
     
-    if cached_data:
+    #if cached_data:
         # If cached data exists, return it
         return Response({
             "success": True,
@@ -142,7 +142,7 @@ def get_translations(request):
     serializer = TranslationListSerializer(translations, many=True, context={'request': request})
     
     # Cache the translations for future requests
-    cache.set(cache_key, serializer.data, timeout=60 * 60)  # Cache for 1 hour (adjust as needed)
+    #cache.set(cache_key, serializer.data, timeout=60 * 60)  # Cache for 1 hour (adjust as needed)
     
     return Response({
         "success": True,
@@ -182,26 +182,38 @@ def add_language(request):
 def get_languages(request):
     """
     API endpoint to fetch all available languages.
-    No payload is required.
+    Each language object will include a key "hello" fetched from TranslationModel using key 'hello_label'.
     """
     cache_key = "languages_all"
     cached_data = cache.get(cache_key)
     
     if cached_data:
+        # Update the 'hello' key for each cached language using the TranslationModel.
+        for lang in cached_data:
+            # Assuming each language object has an 'id' field.
+            translation = TranslationModel.objects.filter(language_id=lang['id'], key='helloLabel').first()
+            lang["hello"] = translation.value if translation else "Hello"
         return Response({
             "success": True,
             "message": "Languages fetched successfully (from cache).",
             "data": cached_data
         }, status=status.HTTP_200_OK)
     
+    # Fetch languages fresh if not cached.
     languages = LanguageModel.objects.all()
     serializer = LanguageSerializer(languages, many=True, context={'request': request})
+    data = serializer.data
+
+    # For each language, get the translation for "hello" using key 'hello_label'
+    for lang in data:
+        translation = TranslationModel.objects.filter(language_id=lang['id'], key='helloLabel').first()
+        lang["hello"] = translation.value if translation else "Hello"
     
-    # Cache the languages data for future requests.
-    cache.set(cache_key, serializer.data, timeout=60 * 60)  # Cache for 1 hour (adjust timeout as needed)
+    # Cache the complete data (including the hello translation) for 1 hour.
+    cache.set(cache_key, data, timeout=60 * 60)
     
     return Response({
         "success": True,
         "message": "Languages fetched successfully.",
-        "data": serializer.data
+        "data": data
     }, status=status.HTTP_200_OK)

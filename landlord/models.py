@@ -10,7 +10,7 @@ class LandlordDetailsModel(models.Model):
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     email = models.EmailField(unique=True)
-    password = models.CharField(max_length=128)
+    password = models.CharField(max_length=128,null=True, blank=True)
     phone_number = models.CharField(max_length=15, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     profile_picture = models.ImageField(upload_to='static/profile_pictures/', null=True, blank=True)
@@ -164,20 +164,16 @@ class LandlordQuestionModel(models.Model):
 class LandlordAnswerModel(models.Model):
     landlord = models.ForeignKey(LandlordDetailsModel, on_delete=models.CASCADE, related_name='landlord_details',null=True)
     question = models.ForeignKey(LandlordQuestionModel, on_delete=models.CASCADE, related_name='answers')
-    # Generic Foreign Key for dynamic model linking
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE,related_name='content_type',null=True)
     object_id = models.PositiveIntegerField(null=True)
-    selected_option = GenericForeignKey('content_type', 'object_id')
-    # Landlord's preference for the selected option
     preference = models.IntegerField(null=True)
-
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"Question: {self.question}, Selected Option: {self.selected_option}, Preference: {self.preference}"
+        return f"Question: {self.question}, Preference: {self.preference}"
     
 
 class LandlordRoomWiseBedModel(models.Model):

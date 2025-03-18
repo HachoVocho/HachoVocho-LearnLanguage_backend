@@ -115,9 +115,9 @@ class LandlordOptionModelAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'is_deleted', 'created_at')
     readonly_fields = ('created_at', 'deleted_at')
 
-@admin.register(LandlordAnswerModel)
+@admin.register(LandlordAnswerModel)    
 class LandlordAnswerModelAdmin(admin.ModelAdmin):
-    list_display = ('id', 'question', 'content_type', 'object_id', 'selected_option', 'preference')
+    list_display = ('id', 'question', 'content_type', 'object_id', 'preference')
     list_filter = ('is_active', 'is_deleted', 'created_at')
     readonly_fields = ('created_at', 'deleted_at')
 

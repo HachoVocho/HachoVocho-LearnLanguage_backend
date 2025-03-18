@@ -79,11 +79,11 @@ class LandlordBedMediaSerializer(serializers.ModelSerializer):
 # Add this new serializer
 class LandlordAnswerSerializer(serializers.ModelSerializer):
     question = serializers.SerializerMethodField()
-    selected_option = serializers.SerializerMethodField()
+    object_id = serializers.SerializerMethodField()
 
     class Meta:
         model = LandlordAnswerModel
-        fields = ['question', 'selected_option', 'preference']
+        fields = ['question', 'object_id', 'preference']
 
     def get_question(self, obj):
         return {
@@ -91,11 +91,11 @@ class LandlordAnswerSerializer(serializers.ModelSerializer):
             "text": obj.question.question_text
         }
 
-    def get_selected_option(self, obj):
-        if obj.selected_option:
+    def get_object_id(self, obj):
+        if obj.object_id:
             return {
-                "id": obj.selected_option.id,
-                "text": getattr(obj.selected_option, 'title', str(obj.selected_option))
+                "id": obj.object_id,
+                #"text": getattr(obj.object_id, 'title', str(obj.object_id))
             }
         return None
     
@@ -111,7 +111,7 @@ class LandlordRoomWiseBedSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'bed_number', 'is_available', 'rent_amount',
             'availability_start_date', 'min_agreement_duration_in_months','is_rent_monthly',
-            'bed_media','tenant_preference_answers'
+            'bed_media','tenant_preference_answers','is_active'
         ]
 
 class LandlordPropertyRoomDetailsSerializer(serializers.ModelSerializer):
@@ -123,7 +123,7 @@ class LandlordPropertyRoomDetailsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'room_size', 'room_type', 'number_of_beds', 
             'number_of_windows', 'max_people_allowed', 'floor', 
-            'location_in_property', 'room_media', 'beds'
+            'location_in_property', 'room_media', 'beds','is_active'
         ]
 
 class LandlordPropertyDetailSerializer(serializers.ModelSerializer):
@@ -238,3 +238,15 @@ class LandlordIdentityDocumentUpdateSerializer(serializers.ModelSerializer):
     def validate_document_number(self, value):
         # For update, simply return the value without uniqueness check.
         return value
+    
+class ToggleActiveStatusSerializer(serializers.Serializer):
+    room_id = serializers.IntegerField(required=False, default=-1)
+    bed_id = serializers.IntegerField(required=False, default=-1)
+
+    def validate(self, data):
+        room_id = data.get("room_id", -1)
+        bed_id = data.get("bed_id", -1)
+        # Ensure at least one valid ID is provided
+        if room_id == -1 and bed_id == -1:
+            raise serializers.ValidationError("Either a valid room_id or bed_id must be provided.")
+        return data
