@@ -100,3 +100,37 @@ def process_payment(request):
         )
 
     
+@api_view(['POST'])
+def tenant_payment_history(request):
+    """
+    POST /api/payments/history/
+    Body: { "tenant_id": <integer> }
+
+    Returns all non-deleted payments for the given tenant, newest first.
+    """
+    tenant_id = request.data.get('tenant_id')
+    if not tenant_id:
+        return Response(
+            ResponseData.error("Missing tenant_id"),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        tenant = TenantDetailsModel.objects.get(id=tenant_id, is_active=True)
+    except TenantDetailsModel.DoesNotExist:
+        return Response(
+            ResponseData.error("Tenant not found"),
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    payments = TenantPaymentModel.objects.filter(
+        tenant=tenant,
+        is_active=True,
+        is_deleted=False
+    ).order_by('-paid_at')
+
+    serializer = TenantPaymentSerializer(payments, many=True)
+    return Response(
+        ResponseData.success(serializer.data, "Payment history retrieved"),
+        status=status.HTTP_200_OK
+    )

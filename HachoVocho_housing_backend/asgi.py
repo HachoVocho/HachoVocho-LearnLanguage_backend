@@ -12,6 +12,8 @@ from channels.auth import AuthMiddlewareStack
 # Initialize Django ASGI application early
 django_asgi_app = get_asgi_application()
 
+import appointments
+import appointments.routing
 # Import routing components AFTER Django setup
 import chat.routing
 import interest_requests.routing
@@ -22,7 +24,7 @@ application = ProtocolTypeRouter({
     "websocket": AuthMiddlewareStack(
         URLRouter(
             chat.routing.websocket_urlpatterns + interest_requests.routing.websocket_urlpatterns
-            + landlord_availability.routing.websocket_urlpatterns
+            + landlord_availability.routing.websocket_urlpatterns + appointments.routing.websocket_urlpatterns
         )
     ),
 })

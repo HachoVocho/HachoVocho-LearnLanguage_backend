@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.contenttypes.admin import GenericTabularInline
 from .models import (
+    LandlordBasePreferenceModel,
     LandlordDetailsModel,
     LandlordEmailVerificationModel,
     LandlordPropertyTypeModel,
@@ -67,7 +68,7 @@ class LandlordPropertyAmenityModelAdmin(admin.ModelAdmin):
 
 @admin.register(LandlordPropertyDetailsModel)
 class   Admin(admin.ModelAdmin):
-    list_display = ('id','property_name', 'property_address', 'property_size','property_city','pin_code', 'property_type', 'number_of_rooms', 'is_active')
+    list_display = ('id','property_city','property_city_id','property_name', 'property_address', 'property_size','pin_code', 'property_type', 'number_of_rooms', 'is_active')
     list_filter = ('is_active', 'is_deleted', 'created_at')
     search_fields = ('property_name', 'property_address')
     readonly_fields = ('created_at', 'deleted_at')
@@ -91,11 +92,25 @@ class LandlordPropertyRoomDetailsModelAdmin(admin.ModelAdmin):
 
 @admin.register(LandlordRoomWiseBedModel)
 class LandlordRoomWiseBedModelAdmin(admin.ModelAdmin):
-    list_display = ('id','room', 'bed_number', 'availability_start_date', 'is_active')
+    list_display = (
+        'id',
+        'room',
+        'property_id',           # ← our new column
+        'bed_number',
+        'availability_start_date',
+        'is_active',
+    )
     list_filter = ('is_active', 'is_deleted', 'created_at')
     search_fields = ('bed_number',)
     readonly_fields = ('created_at', 'deleted_at')
     ordering = ('-created_at',)
+
+    def property_id(self, obj):
+        # obj.room is the ForeignKey to LandlordPropertyRoomDetailsModel
+        # that has its own `.property` FK to LandlordPropertyDetailsModel
+        return obj.room.property.id
+    property_id.short_description = "Property ID"
+
 
 @admin.register(LandlordQuestionTypeModel)
 class LandlordQuestionTypeModelAdmin(admin.ModelAdmin):
@@ -142,3 +157,28 @@ class LandlordPropertyVerificationModelAdmin(admin.ModelAdmin):
     search_fields = ('property__property_name',)
     readonly_fields = ('submitted_at', 'verified_at', 'created_at', 'deleted_at')
 
+class BasePreferenceAnswerInline(admin.TabularInline):
+    """
+    Inline for the LandlordBasePreferenceModel.answers ManyToMany field.
+    """
+    model = LandlordBasePreferenceModel.answers.through
+    extra = 1
+    verbose_name = "Answer"
+    verbose_name_plural = "Answers"
+
+@admin.register(LandlordBasePreferenceModel)
+class LandlordBasePreferenceAdmin(admin.ModelAdmin):
+    list_display = (
+        'landlord',
+        'answer_count',
+        'created_at',
+        'updated_at',
+    )
+    list_filter = ('created_at', 'updated_at')
+    search_fields = ('landlord__email', 'landlord__first_name', 'landlord__last_name')
+    inlines = (BasePreferenceAnswerInline,)
+    readonly_fields = ('created_at', 'updated_at')
+
+    def answer_count(self, obj):
+        return obj.answers.count()
+    answer_count.short_description = 'Number of Answers'

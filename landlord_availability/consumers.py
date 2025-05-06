@@ -9,6 +9,8 @@ from landlord.models import LandlordRoomWiseBedModel
 from tenant.models import TenantDetailsModel  # if AppointmentBookingModel is in the tenant app
 from landlord_availability.models import LandlordAvailabilitySlotModel
 from appointments.models import AppointmentBookingModel  # update 'your_app' to the actual app name
+from django.db.models import Q
+from django.utils.timezone import now
 
 class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -35,6 +37,7 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
                 group_name = f"tenant_{self.tenant_id}_bed_{self.bed_id}"
                 print(f'Joining group: {group_name}')
                 await self.channel_layer.group_add(group_name, self.channel_name)
+
             if action == "connection_established":
                 # Fetch availability data for the next 10 days
                 availability_data = await self.get_availability_for_next_10_days(self.bed_id)
@@ -44,6 +47,7 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
                     "action": "connection_established",
                     "data": availability_data,
                 }))
+
             elif action == "get_availability_time_of_landlord":
                 print('reached')
                 tenant_id = data.get("tenant_id")
@@ -56,6 +60,7 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
                     "action": "get_availability_time_of_landlord",
                     "time_slots": availability_data,
                 }))
+
             elif action == "appointment_booking_request_by_tenant":
                 print("Processing appointment booking request")
                 slot_id = data.get("slot_id")
@@ -70,35 +75,102 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
                 appointment = await self.create_appointment_booking(slot_id, tenant_id)
                 room_id = await self.get_room_id_for_bed(bed_id)
                 property_id = await self.get_property_id_for_bed(bed_id)
+
                 landlord_group = f"property_{property_id}_bed_{bed_id}"
                 print(f'landlord_group {landlord_group}')
                 await self.channel_layer.group_send(
                     landlord_group,
                     {
-                        "type": "appointment_booking_request_created_by_tenant",  # This will trigger the corresponding method in the landlord consumer.
-                        "message": [tenant_id,bed_id,property_id]
+                        "type": "appointment_booking_request_created_by_tenant",
+                        "message": [tenant_id, bed_id, property_id]
                     }
                 )
+
                 tenant_group = f"tenant_{tenant_id}_room_{room_id}"
                 print(f'tenant_group {tenant_group}')
                 await self.channel_layer.group_send(
                     tenant_group,
                     {
-                        "type": "appointment_booking_request_created_by_tenant",  # This will trigger the corresponding method in the tenant consumer.
-                        "message": [room_id,tenant_id]
+                        "type": "appointment_booking_request_created_by_tenant",
+                        "message": [room_id, tenant_id]
                     }
                 )
+
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "appointment_booking_request_created_by_tenant",
                     "appointment_details": appointment,
                     "message": "Appointment booked successfully"
                 }))
+
+            # ───── New cancellation action ─────
+            elif action == "cancel_appointment_by_tenant":
+                print("Processing appointment cancellation request")
+                appointment_id = data.get("appointment_id")
+                tenant_id = data.get("tenant_id")
+                if not appointment_id or not tenant_id:
+                    await self.send(text_data=json.dumps({
+                        "status": "error",
+                        "message": "appointment_id and tenant_id are required"
+                    }))
+                    return
+                # perform your cancellation logic (e.g. await self.cancel_appointment(appointment_id))
+                cancellation_result = await self.cancel_appointment(appointment_id)
+
+                # notify any relevant groups (if needed)
+                await self.channel_layer.group_send(
+                    f"tenant_{tenant_id}_notifications",
+                    {
+                        "type": "appointment_cancellation_processed",
+                        "message": {
+                            "appointment_id": appointment_id,
+                            "status": cancellation_result
+                        }
+                    }
+                )
+
+                await self.send(text_data=json.dumps({
+                    "status": "success",
+                    "action": "cancel_appointment_by_tenant",
+                    "message": "Appointment cancelled successfully",
+                    "result": cancellation_result
+                }))
+            elif action == "confirm_appointment_by_tenant":
+                print("Processing appointment confirmation request")
+                appointment_id = data.get("appointment_id")
+                tenant_id = data.get("tenant_id")
+                if not appointment_id or not tenant_id:
+                    await self.send(text_data=json.dumps({
+                        "status": "error",
+                        "message": "appointment_id and tenant_id are required"
+                    }))
+                    return
+
+                # mark it confirmed
+                confirm_result = await self.confirm_appointment(appointment_id)
+
+                # notify tenant (and landlord if desired)
+                await self.channel_layer.group_send(
+                    f"tenant_{tenant_id}_notifications",
+                    {
+                        "type": "appointment_confirmed",
+                        "message": confirm_result
+                    }
+                )
+
+                await self.send(text_data=json.dumps({
+                    "status": "success",
+                    "action": "confirm_appointment_by_tenant",
+                    "message": "Appointment confirmed successfully",
+                    "result": confirm_result
+                }))
+
             else:
                 await self.send(text_data=json.dumps({
                     "status": "error",
                     "message": "Invalid action specified"
                 }))
+
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
                 "status": "error",
@@ -109,6 +181,55 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
                 "status": "error",
                 "message": str(e)
             }))
+
+    @database_sync_to_async
+    def confirm_appointment(self, appointment_id):
+        """
+        Marks an existing AppointmentBookingModel as confirmed.
+        """
+        try:
+            appt = AppointmentBookingModel.objects.get(
+                id=appointment_id,
+                is_active=True,
+                is_deleted=False
+            )
+        except AppointmentBookingModel.DoesNotExist:
+            raise Exception(f"Appointment {appointment_id} not found")
+
+        appt.status = 'confirmed'
+        appt.updated_at = now()
+        appt.save()
+
+        return {
+            "appointment_id": appt.id,
+            "status": appt.status
+        }
+
+    @database_sync_to_async
+    def cancel_appointment(self, appointment_id):
+        """
+        Marks an existing AppointmentBookingModel as cancelled.
+        Returns a dict with the appointment_id and new status,
+        or raises an exception if not found.
+        """
+        try:
+            appointment = AppointmentBookingModel.objects.get(
+                id=appointment_id,
+                is_active=True,
+                is_deleted=False
+            )
+        except AppointmentBookingModel.DoesNotExist:
+            raise Exception(f"Appointment {appointment_id} not found")
+
+        appointment.status = 'cancelled'
+        appointment.updated_at = now()
+        appointment.save()
+
+        return {
+            "appointment_id": appointment.id,
+            "status": appointment.status
+        }
+
 
     @database_sync_to_async
     def get_room_id_for_bed(self,bed_id):
@@ -129,6 +250,7 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
         property_id = bed.room.property.id
         print(f'property_id {property_id}')
         return landlord_id, property_id
+
 
     @database_sync_to_async
     def get_availability_for_next_10_days(self, bed_id):
@@ -206,7 +328,16 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
             tenant = TenantDetailsModel.objects.get(id=tenant_id)
         except TenantDetailsModel.DoesNotExist:
             raise Exception("Tenant not found")
-        
+
+        AppointmentBookingModel.objects.filter(
+            Q(tenant=tenant, bed=bed) |
+            Q(landlord=landlord, bed=bed),
+            is_active=True,
+            is_deleted=False, 
+        ).update(
+            status='cancelled',
+            updated_at=now()
+        )
         # Create the appointment booking record
         appointment = AppointmentBookingModel.objects.create(
             tenant=tenant,

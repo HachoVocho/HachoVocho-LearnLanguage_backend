@@ -34,6 +34,7 @@ class AppointmentBookingModel(models.Model):
         ('confirmed', 'Confirmed'),
         ('cancelled', 'Cancelled'),
         ('completed', 'Completed'),
+        ('declined', 'Declined'),
     ]
     
     status = models.CharField(
@@ -52,7 +53,11 @@ class AppointmentBookingModel(models.Model):
         choices=INITIATED_BY_CHOICES,
         default='tenant'
     )
-
+    last_updated_by = models.CharField(
+        max_length=10,
+        choices=INITIATED_BY_CHOICES,
+        default='tenant'
+    )
     # Audit fields
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)

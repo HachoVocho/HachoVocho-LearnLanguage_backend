@@ -23,12 +23,19 @@ class LandlordSignupSerializer(serializers.ModelSerializer):
 
 class LandlordQuestionRequestSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=True)
-    bed_id = serializers.IntegerField(required=True)
-
+    bed_id = serializers.IntegerField(required=False,allow_null=True)
+    is_base_preference = serializers.BooleanField(required=True)
+    answers = serializers.ListField(
+        child=serializers.DictField(
+            child=serializers.JSONField()
+        ),
+        required=False,
+    )
 from rest_framework import serializers
 
 class LandlordPreferenceAnswerSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=True)
+    bed_id = serializers.IntegerField(required=True)
     answers = serializers.ListField(
         child=serializers.DictField(
             child=serializers.JSONField()
@@ -121,7 +128,7 @@ class LandlordPropertyRoomDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = LandlordPropertyRoomDetailsModel
         fields = [
-            'id', 'room_size', 'room_type', 'number_of_beds', 
+            'id', 'room_size', 'room_type', 'number_of_beds','room_name',
             'number_of_windows', 'max_people_allowed', 'floor', 
             'location_in_property', 'room_media', 'beds','is_active'
         ]
@@ -250,3 +257,67 @@ class ToggleActiveStatusSerializer(serializers.Serializer):
         if room_id == -1 and bed_id == -1:
             raise serializers.ValidationError("Either a valid room_id or bed_id must be provided.")
         return data
+    
+from rest_framework import serializers
+
+class LandlordRoomDetailRequestSerializer(serializers.Serializer):
+    landlord_id = serializers.IntegerField(
+        help_text="ID of the landlord making the request"
+    )
+    property_id = serializers.IntegerField(
+        help_text="ID of the property to which the room belongs"
+    )
+    room_id = serializers.IntegerField(
+        help_text="ID of the room to fetch details for"
+    )
+
+    def validate(self, data):
+        # optional cross‑field or value checks
+        if data["landlord_id"] <= 0:
+            raise serializers.ValidationError("landlord_id must be positive.")
+        if data["property_id"] <= 0:
+            raise serializers.ValidationError("property_id must be positive.")
+        if data["room_id"] <= 0:
+            raise serializers.ValidationError("room_id must be positive.")
+        return data
+
+
+class LandlordBedDetailRequestSerializer(serializers.Serializer):
+    landlord_id = serializers.IntegerField(
+        help_text="ID of the landlord making the request"
+    )
+    property_id = serializers.IntegerField(
+        help_text="ID of the property to which the bed belongs"
+    )
+    room_id = serializers.IntegerField(
+        help_text="ID of the room to which the bed belongs"
+    )
+    bed_id = serializers.IntegerField(
+        help_text="ID of the bed to fetch details for"
+    )
+
+    def validate(self, data):
+        # optional cross‑field or value checks
+        for field in ("landlord_id", "property_id", "room_id", "bed_id"):
+            if data[field] <= 0:
+                raise serializers.ValidationError(f"{field} must be positive.")
+        return data
+
+class BasePreferenceAnswerSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField()
+    priority_order = serializers.ListField(
+        child=serializers.IntegerField(),
+        allow_empty=True
+    )
+
+class LandlordBasePreferenceSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    answers = BasePreferenceAnswerSerializer(
+        many=True,
+        required=False,
+        default=list,      # if omitted, will be set to []
+    )
+    
+class PropertyAllPreferencesRequestSerializer(serializers.Serializer):
+    landlord_id = serializers.IntegerField()
+    property_id = serializers.IntegerField()

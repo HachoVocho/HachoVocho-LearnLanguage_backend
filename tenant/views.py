@@ -7,8 +7,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from datetime import timedelta
 # At the top of your views.py
+from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch  # Add this import
-from landlord.models import LandlordDetailsModel, LandlordPropertyRoomDetailsModel, LandlordRoomWiseBedModel
+from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, LandlordPropertyRoomDetailsModel, LandlordRoomWiseBedModel
 from payments.models import TenantPaymentModel
 from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
 from translations.models import LanguageModel
@@ -827,31 +828,27 @@ def update_tenant_personality(request):
         status=status.HTTP_200_OK
     )
 
-
-# views.py
-
 @api_view(["POST"])
 def get_properties_by_city_overview(request):
     """
-    API to fetch high-level properties in a specific city with all media combined.
+    API to fetch high-level property summaries in a city:
+     - overall_personality_match_percentage
+     - min_price
+     - media, amenities, distance, etc.
+    (no per-bed details)
     """
     print(f'request.data {request.data}')
     serializer = PropertyListRequestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
             ResponseData.error("Validation error", serializer.errors),
-            status=status.HTTP_400_BAD_REQUEST
+            status=400
         )
 
     city_id = serializer.validated_data['city_id']
     tenant_id = serializer.validated_data['tenant_id']
-    # Get city object
-    city_obj = CityModel.objects.filter(id=city_id).select_related('state__country').first()
 
-    # Fetch currency symbol
-    currency_symbol = city_obj.state.country.currency_symbol if city_obj and city_obj.state and city_obj.state.country else None
-
-    # Update tenant's preferred city
+    # Load tenant & update preferred city
     try:
         tenant = TenantDetailsModel.objects.get(id=tenant_id, is_active=True)
         tenant.preferred_city_id = city_id
@@ -859,102 +856,178 @@ def get_properties_by_city_overview(request):
     except TenantDetailsModel.DoesNotExist:
         return Response(
             ResponseData.error("Tenant not found"),
-            status=status.HTTP_404_NOT_FOUND
+            status=404
         )
 
-    # Get city name
-    city_obj = CityModel.objects.filter(id=city_id).first()
+    # Load tenant personality
+    try:
+        tenant_persona = TenantPersonalityDetailsModel.objects.get(
+            tenant=tenant, is_active=True, is_deleted=False
+        )
+    except TenantPersonalityDetailsModel.DoesNotExist:
+        tenant_persona = None
+
+    # Get currency symbol + city name
+    city_obj = CityModel.objects.filter(id=city_id).select_related('state__country').first()
+    print(f'city_obj {city_obj}')
+    currency_symbol = (
+        city_obj.state.country.currency_symbol
+        if city_obj and city_obj.state and city_obj.state.country else ""
+    )
+    currency = (
+        city_obj.state.country.currency
+        if city_obj and city_obj.state and city_obj.state.country else ""
+    )
     city_name = city_obj.name if city_obj else None
 
-    # Filter properties
+    # Prefetch beds only for scoring
     properties = (
         LandlordPropertyDetailsModel.objects
         .filter(property_city_id=city_id, is_active=True, is_deleted=False)
         .select_related('property_type', 'property_city')
         .prefetch_related(
-            'amenities',
-            'property_media',
             Prefetch(
-                'rooms',
-                queryset=LandlordPropertyRoomDetailsModel.objects.filter(
-                    is_active=True, 
-                    is_deleted=False
-                ).select_related('room_type').prefetch_related(
-                    'room_media',
-                    Prefetch(
-                        'beds',
-                        queryset=LandlordRoomWiseBedModel.objects.filter(
-                            is_active=True,
-                            is_deleted=False,
-                            availability_start_date__isnull=False  # ✅ Only beds with availability date
-                        ).prefetch_related('bed_media')
-                    )
-                )
+                'rooms__beds',
+                queryset=LandlordRoomWiseBedModel.objects.filter(
+                    is_active=True,
+                    is_deleted=False,
+                    availability_start_date__isnull=False
+                ).prefetch_related('tenant_preference_answers'),
+                to_attr='valid_beds'
             )
         )
+        .prefetch_related('property_media', 'amenities')
     )
+    print(f'properties {properties}')
+    # scoring setup
+    personality_fields = [
+        "occupation", "country", "religion", "income_range",
+        "smoking_habit", "drinking_habit", "socializing_habit",
+        "relationship_status", "food_habit", "pet_lover"
+    ]
+    max_marks = 10
+    total_possible = len(personality_fields) * max_marks
 
-    property_list = []
-    print(f'properties123 {properties}')
-    landlord_id = -1
+    result = []
+    landlord_id = None
+
     for prop in properties:
-        all_media = []
-        landlord_id = prop.landlord.id
-        # Property-level media
-        all_media.extend([
-            {"url": media.file.url, "type": media.media_type}
-            for media in prop.property_media.filter(is_active=True)
-        ])
+        landlord_id = prop.landlord_id
 
-        # Amenities
-        amenities = [
-            amenity.name for amenity in prop.amenities.filter(is_active=True)
+        # gather min_price across beds
+        monthly = []
+        daily = []
+
+        # gather all media & amenities
+        media = [
+            {"url": m.file.url, "type": m.media_type}
+            for m in prop.property_media.filter(is_active=True)
         ]
+        amenities = [a.name for a in prop.amenities.filter(is_active=True)]
 
-        available_beds = []  # ✅ Store bed details
+        # scoring: average across every available bed
+        bed_matches = []
+        print("\n=== STARTING BED MATCH CALCULATION ===")
+        print(f"Total rooms in property: {prop.rooms.count()}")
+        for room_idx, room in enumerate(prop.rooms.all(), start=1):
+            print(f"\nProcessing room {room_idx} (ID: {room.id})")
+            valid_beds = getattr(room, 'valid_beds', [])
+            print(f"Found {len(valid_beds)} beds in this room")
+            
+            for bed_idx, bed in enumerate(valid_beds, start=1):
+                print(f"\n- Bed {bed_idx} (ID: {bed.id}, Rent: {bed.rent_amount}, Monthly: {bed.is_rent_monthly})")
+                
+                # Price buckets
+                (monthly if bed.is_rent_monthly else daily).append(bed.rent_amount)
+                print(f"Added to {'monthly' if bed.is_rent_monthly else 'daily'} price bucket")
 
-        # Collect room + bed media in one list
-        for room in prop.rooms.all():
-            # Room media
-            print(f'room123 {room}')
-            all_media.extend([
-                {"url": rm.file.url, "type": rm.media_type}
-                for rm in room.room_media.filter(is_active=True)
-            ])
+                # Landlord answers
+                lan = list(bed.tenant_preference_answers.all())
+                print(f"Found {len(lan)} preference answers directly on bed")
+                
+                if not lan:
+                    print("No bed-specific answers, checking base preferences...")
+                    base = LandlordBasePreferenceModel.objects.filter(
+                        landlord_id=landlord_id
+                    ).first()
+                    if base:
+                        lan = list(base.answers.all())
+                        print(f"Found {len(lan)} base preference answers")
+                    else:
+                        print("No base preferences found either")
 
-            # Determine if the room is **Private** or **Sharing**
-            room_type = room.room_type.type_name
+                # Compute match score
+                score = 0
+                if tenant_persona and lan:
+                    print(f"\nCalculating match score for bed {bed.id}")
+                    print(f"Tenant persona exists, {len(lan)} landlord answers available")
+                    
+                    for field_idx, field in enumerate(personality_fields, start=1):
+                        choice = getattr(tenant_persona, f"{field}_id", None)
+                        print(f"\nField {field_idx}/{len(personality_fields)}: {field}")
+                        print(f"Tenant's choice ID: {choice}")
+                        
+                        if not choice:
+                            print("No tenant choice for this field, skipping")
+                            continue
+                        
+                        try:
+                            model_field = TenantPersonalityDetailsModel._meta.get_field(field).remote_field.model
+                            ctype = ContentType.objects.get_for_model(model_field)
+                            rel = [la for la in lan if la.question.content_type_id == ctype.id]
+                            print(f"Found {len(rel)} relevant answers for this field")
+                            
+                            if not rel:
+                                print("No matching answers for this field, skipping")
+                                continue
+                            
+                            sorted_l = sorted(rel, key=lambda la: la.preference or 0)
+                            i = next((i for i, la in enumerate(sorted_l) if la.object_id == choice), None)
+                            
+                            if i is not None:
+                                opts = len(sorted_l)
+                                field_score = ((opts - i) / opts) * max_marks
+                                score += field_score
+                                print(f"Match found at position {i} of {opts}")
+                                print(f"Field score: {field_score:.2f} (Total: {score:.2f})")
+                            else:
+                                print("No matching answer found for tenant's choice")
+                        except Exception as e:
+                            print(f"Error processing field {field}: {str(e)}")
+                            continue
+                else:
+                    print("Skipping score calculation - missing tenant persona or landlord answers")
+                
+                pct = round((score / total_possible) * 100, 2) if total_possible else 0.0
+                print(f"\nFinal match percentage for bed {bed.id}: {pct}%")
+                bed_matches.append(pct)
+                print(f"Added to bed_matches (now has {len(bed_matches)} items)")
 
-            # Iterate through beds inside the room
-            for bed in room.beds.all():
-                if bed.availability_start_date:  # ✅ Only process beds with availability_start_date
-                    # Convert date format
-                    start_date_str = datetime.strftime(bed.availability_start_date, "%d %b %y")  # Example: 5th Feb 25
-
-
-                    all_media.extend([
-                        {"url": bm.file.url, "type": bm.media_type}
-                        for bm in bed.bed_media.filter(is_active=True)
-                    ])
-
-                    # ✅ Add bed details to the list
-                    available_beds.append({
-                        "bed_id": bed.id,
-                        "bed_number": bed.bed_number,
-                        "room_type": room_type,
-                        "rent_amount": str(bed.rent_amount) + f' {currency_symbol}',
-                        "availability_start_date": start_date_str,
-                        "is_rent_monthly": bed.is_rent_monthly,
-                    })
-
-        property_data = {
+        print("\n=== FINISHED BED MATCH CALCULATION ===")
+        print(f"Total beds processed: {len(bed_matches)}")
+        print(f"bed_matches contents: {bed_matches}")
+        print(f'bed_matchesscs {bed_matches}')
+        if bed_matches:
+            # overall & min_price
+            overall = round(sum(bed_matches) / len(bed_matches), 2)
+            min_price = None
+            if monthly:
+                min_price = f"{min(monthly):.2f} {currency_symbol} / month"
+            if daily:
+                d = f"{min(daily):.2f} {currency_symbol} / day"
+                min_price = f"{min_price}, {d}" if min_price else d
+        else:
+            continue
+        print(f'prop.latitude {prop.latitude}')
+        print(f'prop.longitude {prop.longitude}')
+        print(f'city_obj.latitude {city_obj.latitude}')
+        print(f'city_obj.latitude {city_obj.longitude}')
+        result.append({
             "id": prop.id,
             "property_name": prop.property_name,
             "distance_from_city_center": haversine_distance(
-                float(prop.latitude),
-                float(prop.longitude),
-                float(city_obj.latitude),
-                float(city_obj.longitude)
+                float(prop.latitude), float(prop.longitude),
+                float(city_obj.latitude), float(city_obj.longitude)
             ),
             "property_size": prop.property_size,
             "property_type": prop.property_type.type_name if prop.property_type else None,
@@ -963,81 +1036,42 @@ def get_properties_by_city_overview(request):
             "floor": prop.floor,
             "property_description": prop.property_description,
             "amenities": amenities,
-            "media": all_media,  # ✅ All media (property + rooms + beds)
-            "available_beds": available_beds,  # ✅ List of available beds with details
-        }
-        if len(available_beds) != 0:
-            property_list.append(property_data)
+            "media": media,
+            "currency_symbol" : currency_symbol,
+            "currency" : currency,
+            "min_price": min_price,
+            "overall_personality_match_percentage": overall,
+        })
 
-    data = {
-        "preferred_city_name": city_name,
-        "landlord_id" : landlord_id,
-        "properties": property_list
-    }
     return Response(
-        ResponseData.success(data, "Properties fetched successfully"),
-        status=status.HTTP_200_OK
+        ResponseData.success({
+            "preferred_city_name": city_name,
+            "landlord_id": landlord_id,
+            "properties": result
+        }, "Properties fetched successfully"),
+        status=200
     )
+
 
 
 @api_view(["POST"])
 def get_property_details(request):
     """
-    2) API to fetch detailed property info (rooms & beds).
-       Request: {'property_id': int}
-       ResponseData.success({
-         "id": ...,
-         "property_name": ...,
-         "property_address": ...,
-         "property_size": ...,
-         "property_type": ...,
-         "property_city": ...,
-         "pin_code": ...,
-         "floor": ...,
-         "property_description": ...,
-         "amenities": [...],
-         "latitude": ...,
-         "longitude": ...,
-         "media": [...],
-         "rooms": [
-           {
-             "room_id": ...,
-             "room_type": ...,
-             "room_size": ...,
-             "number_of_beds": ...,
-             "max_people_allowed": ...,
-             "floor": ...,
-             "location_in_property": ...,
-             "room_media": [...],
-             "beds": [
-               {
-                 "bed_id": ...,
-                 "bed_number": ...,
-                 "is_available": ...,
-                 "rent_per_month": ...,
-                 "availability_start_date": ...,
-                 "availability_end_date": ...,
-                 "bed_media": [...]
-               },
-               ...
-             ]
-           },
-           ...
-         ]
-       }, "Property details fetched successfully")
+    API to fetch detailed property info (rooms & beds), including:
+      - is_phone_verified, is_payment_active (tenant)
+      - per-bed personality_match_percentage
     """
-    print(f'request.data {request.data}')
     serializer = PropertyDetailRequestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
-            ResponseData.error(serializer.errors),
+            ResponseData.error("Validation error", serializer.errors),
             status=status.HTTP_400_BAD_REQUEST
         )
 
     property_id = serializer.validated_data['property_id']
     tenant_id = serializer.validated_data['tenant_id']
 
-    # Fetch the property
+    # fetch prop
     prop = (
         LandlordPropertyDetailsModel.objects
         .filter(id=property_id, is_active=True, is_deleted=False)
@@ -1048,51 +1082,64 @@ def get_property_details(request):
             Prefetch(
                 'rooms',
                 queryset=LandlordPropertyRoomDetailsModel.objects.filter(
-                    is_active=True, 
-                    is_deleted=False
+                    is_active=True, is_deleted=False
                 ).prefetch_related(
                     'room_media',
                     Prefetch(
                         'beds',
                         queryset=LandlordRoomWiseBedModel.objects.filter(
-                            is_active=True,
-                            is_deleted=False
-                        ).prefetch_related('bed_media')
+                            is_active=True, is_deleted=False
+                        ).prefetch_related(
+                            'bed_media',
+                            'tenant_preference_answers'
+                        )
                     )
                 )
             )
         )
         .first()
     )
-
     if not prop:
         return Response(
             ResponseData.error("Property not found."),
             status=status.HTTP_404_NOT_FOUND
         )
 
-    # Property media
-    property_media = [
-        {"url": media.file.url, "type": media.media_type}
-        for media in prop.property_media.filter(is_active=True)
-    ]
-
-    # Amenities
-    amenities = [
-        amenity.name for amenity in prop.amenities.filter(is_active=True)
-    ]
-    # Fetch the tenant to check phone verification and payment status.
+    # tenant phone/payment
     tenant = TenantDetailsModel.objects.filter(id=tenant_id).first()
     is_phone_verified = bool(tenant and tenant.phone_number)
-    payment = None
     is_payment_active = False
     if tenant:
-        payment = TenantPaymentModel.objects.filter(
+        pay = TenantPaymentModel.objects.filter(
             tenant=tenant, is_active=True, is_deleted=False
         ).order_by('-paid_at').first()
-        if payment and (payment.paid_at + timedelta(days=30) > now()):
+        if pay and pay.paid_at + timedelta(days=30) > now():
             is_payment_active = True
-    # Room details
+
+    # load tenant persona once
+    try:
+        tenant_persona = TenantPersonalityDetailsModel.objects.get(
+            tenant_id=tenant_id, is_active=True, is_deleted=False
+        )
+    except TenantPersonalityDetailsModel.DoesNotExist:
+        tenant_persona = None
+
+    # scoring setup
+    pfields = [
+        "occupation", "country", "religion", "income_range",
+        "smoking_habit", "drinking_habit", "socializing_habit",
+        "relationship_status", "food_habit", "pet_lover"
+    ]
+    max_marks = 10
+    tot = len(pfields) * max_marks
+
+    # build response
+    property_media = [
+        {"url": m.file.url, "type": m.media_type}
+        for m in prop.property_media.filter(is_active=True)
+    ]
+    amenities = [a.name for a in prop.amenities.filter(is_active=True)]
+
     rooms_data = []
     for room in prop.rooms.all():
         room_media = [
@@ -1105,34 +1152,61 @@ def get_property_details(request):
                 {"url": bm.file.url, "type": bm.media_type}
                 for bm in bed.bed_media.filter(is_active=True)
             ]
-            start_date_str = ''
-            if bed.availability_start_date is not None:
-                start_date_str = datetime.strftime(bed.availability_start_date, "%d %b %y")
-                beds_data.append({
-                    "bed_id": bed.id,
-                    "bed_number": bed.bed_number,
-                    "is_available": bed.is_available,
-                    "is_rent_monthly": bed.is_rent_monthly,
-                    "min_agreement_duration_in_months": str(bed.min_agreement_duration_in_months),
-                    "rent_amount": str(bed.rent_amount),
-                    "availability_start_date": start_date_str,
-                    "bed_media": bed_media,
-              "is_phone_verified": is_phone_verified,
+            # score this bed
+            lan = list(bed.tenant_preference_answers.all())
+            if not lan:
+                base = LandlordBasePreferenceModel.objects.filter(
+                    landlord_id=prop.landlord_id
+                ).first()
+                if base:
+                    lan = list(base.answers.all())
+
+            score = 0
+            if tenant_persona and lan:
+                for f in pfields:
+                    choice = getattr(tenant_persona, f"{f}_id", None)
+                    if not choice:
+                        continue
+                    mf = TenantPersonalityDetailsModel._meta.get_field(f).remote_field.model
+                    ct = ContentType.objects.get_for_model(mf)
+                    rel = [la for la in lan if la.question.content_type_id == ct.id]
+                    if not rel:
+                        continue
+                    sorted_l = sorted(rel, key=lambda la: la.preference or 0)
+                    idx = next((i for i, la in enumerate(sorted_l) if la.object_id == choice), None)
+                    if idx is not None:
+                        opts = len(sorted_l)
+                        score += ((opts - idx) / opts) * max_marks
+            match_pct = round((score / tot) * 100, 2) if tot else 0.0
+
+            beds_data.append({
+                "bed_id": bed.id,
+                "bed_number": bed.bed_number,
+                "is_available": bed.is_available,
+                "is_rent_monthly": bed.is_rent_monthly,
+                "min_agreement_duration_in_months": bed.min_agreement_duration_in_months,
+                "rent_amount": str(bed.rent_amount),
+                "availability_start_date": bed.availability_start_date.strftime("%d %b %y")
+                    if bed.availability_start_date else "",
+                "availability_end_date": bed.availability_end_date.strftime("%d %b %y")
+                    if getattr(bed, 'availability_end_date', None) else "",
+                "bed_media": bed_media,
+                "personality_match_percentage": match_pct,
+                "is_phone_verified": is_phone_verified,
                 "is_payment_active": is_payment_active,
-                })
+            })
 
         rooms_data.append({
             "room_id": room.id,
             "room_type": room.room_type.type_name if room.room_type else None,
             "room_size": room.room_size,
-            "number_of_beds": 1 if room.number_of_beds == None else room.number_of_beds,
-            "max_people_allowed": 1 if room.max_people_allowed == None else room.max_people_allowed,
-            "floor": 1 if room.floor == None else room.floor,
+            "number_of_beds": room.number_of_beds or 1,
+            "max_people_allowed": room.max_people_allowed or 1,
+            "floor": room.floor or 0,
             "location_in_property": room.location_in_property,
             "room_media": room_media,
             "beds": beds_data
         })
-
 
     return Response(
         ResponseData.success(rooms_data, "Property details fetched successfully"),

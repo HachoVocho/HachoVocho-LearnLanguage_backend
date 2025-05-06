@@ -2,9 +2,9 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.timezone import now
-from landlord.models import LandlordDetailsModel, LandlordPropertyDetailsModel
+from landlord.models import LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomWiseBedModel
 from .models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
-from .serializers import AddLandlordAvailabilitySerializer, GetLandlordAvailabilitySerializer
+from .serializers import AddLandlordAvailabilitySerializer, GetLandlordAvailabilityByBedSerializer, GetLandlordAvailabilitySerializer
 from response import Response as ResponseData  # Importing ResponseData class
 import datetime
 
@@ -110,9 +110,9 @@ def add_landlord_availability(request):
 @api_view(["POST"])
 def get_landlord_availability_by_month(request):
     """
-    API to fetch all landlord availabilities for a specific property and month.
+    API to fetch all landlord availabilities for a specific property,
+    optionally filtered by a given month.
     """
-    print(f'request.data {request.data}')
     serializer = GetLandlordAvailabilitySerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
@@ -120,49 +120,172 @@ def get_landlord_availability_by_month(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    landlord_id = serializer.validated_data["landlord_id"]
-    property_id = serializer.validated_data["property_id"]
-    month = serializer.validated_data["month"]  # Extract month from request
+    ld_id   = serializer.validated_data["landlord_id"]
+    prop_id = serializer.validated_data["property_id"]
+    month   = serializer.validated_data.get("month", None)
 
-    # Filter availabilities for the specified month
-    availabilities = LandlordAvailabilityModel.objects.filter(
-        landlord_id=landlord_id,
-        property_id=property_id,
-        date__month=month,  # Filter by month
+    # Base queryset
+    qs = LandlordAvailabilityModel.objects.filter(
+        landlord_id=ld_id,
+        property_id=prop_id,
         is_active=True,
         is_deleted=False
     )
+    # Only filter by month if provided
+    if month is not None:
+        qs = qs.filter(date__month=month)
 
-    if not availabilities.exists():
+    if not qs.exists():
         return Response(
-            ResponseData.success_without_data("No availability found for this property and month."),
+            ResponseData.success_without_data(
+                "No availability found for this property" +
+                (f" in month {month}." if month else ".")
+            ),
             status=status.HTTP_200_OK
         )
 
     all_availabilities = []
-    
-    for availability in availabilities:
+    for availability in qs.order_by("date"):
         slots = LandlordAvailabilitySlotModel.objects.filter(
-            availability=availability, is_active=True, is_deleted=False
-        )
+            availability=availability,
+            is_active=True,
+            is_deleted=False
+        ).order_by("start_time")
 
         slots_data = [
             {
                 "start_time": slot.start_time.strftime("%H:%M"),
-                "end_time": slot.end_time.strftime("%H:%M"),
-                "date": availability.date.strftime("%Y-%m-%d")
+                "end_time":   slot.end_time.strftime("%H:%M"),
+                "date":       slot.availability.date.strftime("%Y-%m-%d"),
             }
             for slot in slots
         ]
 
-        all_availabilities.append({
-            "landlord_id": landlord_id,
-            "property_id": property_id,
-            "time_slots": slots_data,
-        })
+        if slots_data:
+            all_availabilities.append({
+                "date":       availability.date.strftime("%Y-%m-%d"),
+                "time_slots": slots_data,
+                "landlord_id" : ld_id,
+                "property_id" : prop_id,
+            })
+        print(f'all_availabilities {all_availabilities}')
 
     return Response(
-        ResponseData.success(all_availabilities, "All landlord availabilities fetched successfully."),
+        ResponseData.success(all_availabilities, "Availabilities fetched successfully."),
         status=status.HTTP_200_OK
     )
 
+
+@api_view(["POST"])
+def get_landlord_availability_by_property(request):
+    """
+    API to fetch all future availabilities for the property
+    to which the given bed belongs.
+    """
+    print("\n=== STARTING get_landlord_availability_by_property ===")
+    print(f"Initial request data: {request.data}")
+    
+    data = request.data.copy()
+    
+    # If they only sent bed_id, look up the property_id & landlord_id
+    bed_id = data.get("bed_id")
+    if bed_id and (not data.get("property_id") or not data.get("landlord_id")):
+        print(f"Only bed_id provided ({bed_id}), looking up property and landlord...")
+        
+        try:
+            bed = LandlordRoomWiseBedModel.objects.get(
+                pk=bed_id,
+                is_deleted=False,
+                is_active=True,
+            )
+            print(f"Found bed: {bed.id} (Room: {bed.room.id if bed.room else None})")
+            
+            # navigate up: bed → room → property → landlord
+            room = bed.room
+            prop = room.property
+            landlord = prop.landlord
+            
+            data["property_id"] = prop.id
+            data["landlord_id"] = landlord.id
+            
+            print(f"Derived property_id: {prop.id}, landlord_id: {landlord.id}")
+            
+        except LandlordRoomWiseBedModel.DoesNotExist:
+            print(f"Error: Bed with id {bed_id} not found")
+            return Response(
+                ResponseData.error({"bed_id": "Invalid bed_id"}),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    print(f"Final data for serializer: {data}")
+    
+    # now run through your existing serializer & logic
+    serializer = GetLandlordAvailabilityByBedSerializer(data=data)
+    if not serializer.is_valid():
+        print(f"Serializer errors: {serializer.errors}")
+        return Response(
+            ResponseData.error(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    property_id = serializer.validated_data["property_id"]
+    landlord_id = serializer.validated_data["landlord_id"]
+    
+    print(f"Querying availabilities for landlord_id: {landlord_id}, property_id: {property_id}")
+
+    # all availabilities for this landlord & property
+    qs = LandlordAvailabilityModel.objects.filter(
+        landlord_id=landlord_id,
+        property_id=property_id,
+        is_active=True,
+        is_deleted=False
+    ).order_by("date")
+
+    print(f"Found {qs.count()} availability days")
+    
+    if not qs.exists():
+        print("No availability records found")
+        return Response(
+            ResponseData.success_without_data(
+                "No availability found for bed's property."
+            ),
+            status=status.HTTP_200_OK
+        )
+
+    result = []
+    for availability in qs:
+        print(f"\nProcessing availability for date: {availability.date}")
+        
+        slots = LandlordAvailabilitySlotModel.objects.filter(
+            availability=availability,
+            is_active=True,
+            is_deleted=False
+        ).order_by("start_time")
+
+        print(f"Found {slots.count()} slots for this date")
+        
+        slots_data = [
+            {
+                "start_time": slot.start_time.strftime("%H:%M"),
+                "end_time":   slot.end_time.strftime("%H:%M"),
+                "slot_id":    slot.id,
+            }
+            for slot in slots
+        ]
+        
+        if slots_data:
+            print(f"Adding {len(slots_data)} slots to result")
+            result.append({
+                "date":       availability.date.strftime("%Y-%m-%d"),
+                "time_slots": slots_data,
+            })
+        else:
+            print("No active slots found for this date")
+
+    print(f"\nFinal result contains {len(result)} days with availability")
+    print("=== END get_landlord_availability_by_property ===")
+    
+    return Response(
+        ResponseData.success(result, "Availabilities fetched successfully."),
+        status=status.HTTP_200_OK
+    )

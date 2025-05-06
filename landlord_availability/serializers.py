@@ -13,4 +13,10 @@ class AddLandlordAvailabilitySerializer(serializers.Serializer):
 class GetLandlordAvailabilitySerializer(serializers.Serializer):
     landlord_id = serializers.IntegerField(required=True)
     property_id = serializers.IntegerField(required=True)
-    month = serializers.IntegerField(required=True)
+    month = serializers.IntegerField(required=False)
+
+
+class GetLandlordAvailabilityByBedSerializer(serializers.Serializer):
+    landlord_id = serializers.IntegerField(required=False)
+    property_id = serializers.IntegerField(required=False)
+    bed_id = serializers.IntegerField(required=False)

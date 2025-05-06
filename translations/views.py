@@ -1,8 +1,11 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+
+from landlord.models import LandlordDetailsModel
+from tenant.models import TenantDetailsModel
 from .models import LanguageModel, TranslationModel
-from .serializers import TranslationSerializer, TranslationListSerializer, LanguageSerializer
+from .serializers import LandlordLanguageUpdateSerializer, TenantLanguageUpdateSerializer, TranslationSerializer, TranslationListSerializer, LanguageSerializer
 from googletrans import Translator
 from django.core.cache import cache
 
@@ -182,38 +185,156 @@ def add_language(request):
 def get_languages(request):
     """
     API endpoint to fetch all available languages.
-    Each language object will include a key "hello" fetched from TranslationModel using key 'hello_label'.
+    Optionally accepts {"tenant_id": 123} or {"landlord_id": 456}.
+    If tenant_id is present and valid, its preferred_language.code is returned.
+    Otherwise, if landlord_id is present and valid, its preferred_language.code is returned.
+    Each language object also includes a "hello" key from TranslationModel.
     """
     cache_key = "languages_all"
     cached_data = cache.get(cache_key)
-    
+
+    # Determine preferred language code, giving priority to tenant_id
+    pref_code = None
+    tenant_id = request.data.get("tenant_id")
+    if tenant_id is not None:
+        try:
+            tenant = TenantDetailsModel.objects.get(id=tenant_id, is_active=True, is_deleted=False)
+            if tenant.preferred_language:
+                pref_code = tenant.preferred_language.code
+        except TenantDetailsModel.DoesNotExist:
+            pass
+    else:
+        landlord_id = request.data.get("landlord_id")
+        if landlord_id is not None:
+            try:
+                landlord = LandlordDetailsModel.objects.get(id=landlord_id, is_active=True, is_deleted=False)
+                if landlord.preferred_language:
+                    pref_code = landlord.preferred_language.code
+            except LandlordDetailsModel.DoesNotExist:
+                pass
+
+    # Function to enrich each language dict with its "hello" translation
+    def enrich_with_hello(data_list):
+        for lang in data_list:
+            t = TranslationModel.objects.filter(
+                language_id=lang["id"], key="helloLabel"
+            ).first()
+            lang["hello"] = t.value if t else "Hello"
+
     if cached_data:
-        # Update the 'hello' key for each cached language using the TranslationModel.
-        for lang in cached_data:
-            # Assuming each language object has an 'id' field.
-            translation = TranslationModel.objects.filter(language_id=lang['id'], key='helloLabel').first()
-            lang["hello"] = translation.value if translation else "Hello"
-        return Response({
+        # Update the 'hello' translation for each cached language
+        enrich_with_hello(cached_data)
+        response = {
             "success": True,
             "message": "Languages fetched successfully (from cache).",
-            "data": cached_data
-        }, status=status.HTTP_200_OK)
-    
-    # Fetch languages fresh if not cached.
-    languages = LanguageModel.objects.all()
-    serializer = LanguageSerializer(languages, many=True, context={'request': request})
-    data = serializer.data
+            "data":   cached_data
+        }
+        if pref_code:
+            response["preferred_language"] = pref_code
+        return Response(response, status=status.HTTP_200_OK)
 
-    # For each language, get the translation for "hello" using key 'hello_label'
-    for lang in data:
-        translation = TranslationModel.objects.filter(language_id=lang['id'], key='helloLabel').first()
-        lang["hello"] = translation.value if translation else "Hello"
-    
-    # Cache the complete data (including the hello translation) for 1 hour.
+    # Fetch fresh from DB
+    languages = LanguageModel.objects.all()
+    serializer = LanguageSerializer(languages, many=True, context={"request": request})
+    data = serializer.data  # list of {id, code, name}
+
+    # Enrich with "hello" per language
+    enrich_with_hello(data)
+
+    # Cache for next time (1 hour)
     cache.set(cache_key, data, timeout=60 * 60)
-    
-    return Response({
+
+    response = {
         "success": True,
         "message": "Languages fetched successfully.",
-        "data": data
+        "data":   data
+    }
+    if pref_code:
+        response["preferred_language"] = pref_code
+
+    return Response(response, status=status.HTTP_200_OK)
+    
+@api_view(["POST"])
+def set_tenant_language(request):
+    """
+    API endpoint to update a tenant's preferred language.
+    Expected JSON payload:
+    {
+      "tenant_id": 123,
+      "language_code": "en"
+    }
+    """
+    serializer = TenantLanguageUpdateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            "success": False,
+            "message": "Invalid parameters.",
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    tenant_id = serializer.validated_data["tenant_id"]
+    lang_code = serializer.validated_data["language_code"]
+
+    # fetch instances
+    tenant = TenantDetailsModel.objects.get(id=tenant_id)
+    language = LanguageModel.objects.get(code=lang_code)
+
+    # update and save
+    # assumes TenantDetailsModel has a ForeignKey or CharField named `preferred_language`
+    tenant.preferred_language = language
+    tenant.save()
+
+    # clear any tenant‐specific cache if you have one:
+    cache.delete(f"tenant_{tenant_id}_profile")
+
+    return Response({
+        "success": True,
+        "message": "Tenant language updated successfully.",
+        "data": {
+            "tenant_id": tenant_id,
+            "language_code": lang_code
+        }
+    }, status=status.HTTP_200_OK)
+    
+    
+@api_view(["POST"])
+def set_landlord_language(request):
+    """
+    API endpoint to update a tenant's preferred language.
+    Expected JSON payload:
+    {
+      "tenant_id": 123,
+      "language_code": "en"
+    }
+    """
+    serializer = LandlordLanguageUpdateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            "success": False,
+            "message": "Invalid parameters.",
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    landlord_id = serializer.validated_data["landlord_id"]
+    lang_code = serializer.validated_data["language_code"]
+
+    # fetch instances
+    landlord = LandlordDetailsModel.objects.get(id=landlord_id)
+    language = LanguageModel.objects.get(code=lang_code)
+
+    # update and save
+    # assumes TenantDetailsModel has a ForeignKey or CharField named `preferred_language`
+    landlord.preferred_language = language
+    landlord.save()
+
+    # clear any tenant‐specific cache if you have one:
+    cache.delete(f"landlord_{landlord_id}_profile")
+
+    return Response({
+        "success": True,
+        "message": "landlord language updated successfully.",
+        "data": {
+            "landlord_id": landlord_id,
+            "language_code": lang_code
+        }
     }, status=status.HTTP_200_OK)

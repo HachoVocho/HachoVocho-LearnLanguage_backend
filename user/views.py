@@ -9,6 +9,7 @@ from landlord.models import LandlordDetailsModel, LandlordEmailVerificationModel
 from notifications.models import DeviceNotificationModel
 from tenant.models import TenantDetailsModel, TenantEmailVerificationModel
 from tenant.views import send_otp_email
+from user.static_strings import OTP_SMS_MESSAGE
 from .models import UserRoleModel
 from response import Response as ResponseData
 from .serializers import EmailVerificationSerializer, ForgotPasswordSerializer, LoginSerializer, PasswordUpdateSerializer

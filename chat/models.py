@@ -56,3 +56,27 @@ class ChatMessageModel(models.Model):
             from landlord.models import LandlordDetailsModel  # Replace 'your_app' with your app name
             return LandlordDetailsModel.objects.filter(pk=pk).first()
         return None
+
+class ChatMessageTranslationModel(models.Model):
+    """
+    Stores a single translation of a ChatMessageModel into one target language.
+    """
+    # Link back to the original message
+    message = models.ForeignKey(
+        ChatMessageModel,
+        on_delete=models.CASCADE,
+        related_name="translations"
+    )
+    # ISO 639-1 code of the translated language, e.g. "en", "de", "fr"
+    language_code = models.CharField(max_length=5)
+    # The translated text
+    translated_text = models.TextField()
+    # When this translation was created
+    created_at = models.DateTimeField(default=now)
+
+    class Meta:
+        # Ensure you don’t store the same language twice for one message
+        unique_together = ("message", "language_code")
+
+    def __str__(self):
+        return f"{self.message.id} → [{self.language_code}]"

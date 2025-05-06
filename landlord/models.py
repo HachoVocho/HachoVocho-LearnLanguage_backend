@@ -102,6 +102,7 @@ class LandlordPropertyRoomTypeModel(models.Model):
 class LandlordPropertyRoomDetailsModel(models.Model):
     property = models.ForeignKey(LandlordPropertyDetailsModel, on_delete=models.CASCADE, related_name='rooms')
     room_size = models.TextField(null=True)
+    room_name = models.CharField(max_length=50, null=True, blank=True)
     room_type = models.ForeignKey(LandlordPropertyRoomTypeModel, on_delete=models.CASCADE, related_name='room_type',null=True)
     number_of_beds = models.PositiveIntegerField(null=True, blank=True)
     number_of_windows = models.PositiveIntegerField(null=True, blank=True)
@@ -181,6 +182,7 @@ class LandlordRoomWiseBedModel(models.Model):
     tenant_preference_answers = models.ManyToManyField(LandlordAnswerModel,related_name='tenant_preference_answers')
     bed_number = models.PositiveIntegerField(null=True, blank=True)
     is_available = models.BooleanField(default=True,blank=True)
+    tenant_preference = models.CharField(max_length=40,default='',blank=True,null=True)
     is_rent_monthly = models.BooleanField(default=True)
     min_agreement_duration_in_months = models.IntegerField(null=True,blank=True)
     rent_amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -290,3 +292,27 @@ class LandlordPropertyVerificationModel(models.Model):
     def __str__(self):
         return f"Property: {self.property.property_name}, Status: {self.verification_status}"
 
+
+class LandlordBasePreferenceModel(models.Model):
+    """
+    A landlord’s *global* tenant‐preference answers,
+    not tied to any particular bed.
+    """
+    landlord = models.ForeignKey(
+        LandlordDetailsModel,
+        on_delete=models.CASCADE,
+        related_name="base_preferences"
+    )
+    answers = models.ManyToManyField(
+        LandlordAnswerModel,
+        related_name="base_preference_sets",
+        blank=True,
+    )
+    created_at = models.DateTimeField(default=now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("landlord",)   # one row per landlord
+
+    def __str__(self):
+        return f"Base preferences for {self.landlord.email}"
