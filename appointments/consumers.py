@@ -8,6 +8,7 @@ from landlord_availability.models import LandlordAvailabilitySlotModel, Landlord
 from tenant.models import TenantDetailsModel
 from landlord.models import LandlordDetailsModel
 import json
+from typing import Optional, Dict, Any
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 class AppointmentRepository:
@@ -105,66 +106,75 @@ class AppointmentRepository:
 
     @staticmethod
     @database_sync_to_async
-    def fetch_landlord_appointments(landlord_id, property_id, filters=None):
+    def fetch_landlord_appointments(
+        landlord_id: int,
+        property_id: Optional[int] = None,
+        bed_id: Optional[int]      = None,
+        tenant_id: Optional[int]   = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ):
+        # Base queryset
         qs = AppointmentBookingModel.objects.filter(
             landlord_id=landlord_id,
-            bed__room__property__id=property_id,
             is_active=True,
             is_deleted=False,
         )
 
+        # Narrow by bed if provided, otherwise by property
+        if bed_id is not None:
+            qs = qs.filter(bed_id=bed_id)
+        elif property_id is not None:
+            qs = qs.filter(bed__room__property_id=property_id)
+        else:
+            raise ValueError("Must supply either property_id or bed_id")
+
+        # Narrow to a specific tenant if given
+        if tenant_id is not None:
+            qs = qs.filter(tenant_id=tenant_id)
+
+        # Legacy filters
         if filters:
-            status = filters.get("status")
+            status    = filters.get("status")
+            date_from = filters.get("dateFrom")
+            date_to   = filters.get("dateTo")
+
             if status:
                 qs = qs.filter(status=status)
-
-            date_from = filters.get("dateFrom")
             if date_from:
-                qs = qs.filter(
-                    time_slot__availability__date__gte=date_from
-                )
-
-            date_to = filters.get("dateTo")
+                qs = qs.filter(time_slot__availability__date__gte=date_from)
             if date_to:
-                qs = qs.filter(
-                    time_slot__availability__date__lte=date_to
-                )
+                qs = qs.filter(time_slot__availability__date__lte=date_to)
 
-            tenant_id = filters.get("tenantId")
-            if tenant_id:
-                qs = qs.filter(tenant_id=tenant_id)
-
-            bed_id = filters.get("bedId")
-            if bed_id:
-                qs = qs.filter(bed_id=bed_id)
-
+        # Order and serialize
         qs = qs.order_by(
             "time_slot__availability__date",
-            "time_slot__start_time"
+            "time_slot__start_time",
         )
-
         out = []
         for appt in qs:
             slot = appt.time_slot
             out.append({
-                "appointmentId": appt.id,
+                "appointmentId":   appt.id,
+                "tenantId":        appt.tenant.id,
                 "tenantFirstName": appt.tenant.first_name,
-                "tenantLastName": appt.tenant.last_name,
-                "bedId": appt.bed.id,
-                "tenantId": appt.tenant.id,
+                "tenantLastName":  appt.tenant.last_name,
+                "bedId":           appt.bed.id,
                 "bedNumber": appt.bed.bed_number,
-                "date": slot.availability.date.strftime("%Y-%m-%d"),
-                "startTime": slot.start_time.strftime("%H:%M"),
-                "endTime": slot.end_time.strftime("%H:%M"),
-                "status": appt.status,
-                "slotId": slot.id,
-                "initiatedBy": appt.initiated_by,
-                'lastUpdatedBy' : appt.last_updated_by
+                "date":            slot.availability.date.strftime("%Y-%m-%d"),
+                "startTime":       slot.start_time.strftime("%H:%M"),
+                "endTime":         slot.end_time.strftime("%H:%M"),
+                "status":          appt.status,
+                "slotId":          slot.id,
+                "initiatedBy":     appt.initiated_by,
+                "lastUpdatedBy":   appt.last_updated_by,
             })
 
-        priority = {'pending': 0, 'confirmed': 1, 'cancelled': 2}
+        # Sort by status priority
+        priority = {'pending': 0, 'confirmed': 1, 'cancelled': 2, 'declined': 3}
         out.sort(key=lambda x: priority.get(x['status'], 99))
         return out
+
+
 
     @staticmethod
     @database_sync_to_async
@@ -191,6 +201,7 @@ class AppointmentRepository:
             "start_time": timeslot.start_time.strftime('%H:%M'),
             "end_time": timeslot.end_time.strftime('%H:%M'),
             "status": appt.status,
+            'propertyId' : appt.bed.room.property.id
         }
 
     @staticmethod
@@ -267,6 +278,8 @@ class AppointmentRepository:
             "status": appt.status,
             "tenantId": appt.tenant.id,
             "roomId": appt.bed.room.id,
+            "landlordId" : appt.landlord.id,
+            "propertyId" : appt.bed.room.property.id
         }
 
     @staticmethod
@@ -316,19 +329,31 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
         self.tenant_id = None
+        self.room_id = None
 
     async def disconnect(self, close_code):
-        if self.tenant_id:
-            await self.channel_layer.group_discard(f"tenant_{self.tenant_id}", self.channel_name)
+        if self.tenant_id and self.room_id:
+            group_name = f"tenant_{self.tenant_id}_room_{self.room_id}"
+            await self.channel_layer.group_discard(group_name, self.channel_name)
 
     async def receive(self, text_data):
         data = json.loads(text_data)
         action = data.get("action")
-        print(f'actiondd {action} {data}')
+        print(f'action {action} {data}')
+        # Set landlord and bed id if provided
+        if "tenant_id" in data:
+            self.tenant_id = data["tenant_id"]
+        if "room_id" in data:
+            self.room_id = data["room_id"]
+        if self.tenant_id and self.room_id != -1:
+            group_name = f"tenant_{self.tenant_id}_room_{self.room_id}"
+            print(f'Joining group: {group_name}')
+            await self.channel_layer.group_add(group_name, self.channel_name)
+        if self.tenant_id and self.room_id == -1:
+            group_name = f"tenant_{self.tenant_id}"
+            print(f'Joining group: {group_name}')
+            await self.channel_layer.group_add(group_name, self.channel_name)
         if action == "get_tenant_appointments":
-            self.tenant_id = data.get("tenant_id")
-            # join group so future pushes can target tenant_<id>
-            await self.channel_layer.group_add(f"tenant_{self.tenant_id}", self.channel_name)
             appointments = await AppointmentRepository.fetch_tenant_appointments(self.tenant_id)
             await self.send(text_data=json.dumps({
                 "status": "success",
@@ -344,10 +369,13 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
                     "message":"appointment_id required"
                 })
             res = await AppointmentRepository.cancel_appointment(appt_id,'tenant')
-            # notify tenant
+            # ➋ Notify landlord group
             await self.channel_layer.group_send(
-                f"tenant_{res['tenantId']}_room_{res['roomId']}",
-                {"type":"appointment_cancelled","message":res}
+                f"landlord_{res['landlordId']}_property_{res['propertyId']}",
+                {
+                    "type": "appointment_cancelled_notification_by_tenant",  # event name
+                    "message": res,
+                }
             )
             await self.send_json({
                 "action": "cancel_appointment_by_tenant",
@@ -367,22 +395,6 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
                 "action": "get_available_slots",
                 "data": slots
             })
-        elif action == "book_appointment_slot":
-            tenant_id   = data.get("tenant_id")
-            bed_id      = data.get("bed_id")
-            slot_id     = data.get("slot_id")
-            landlord_id = data.get("landlord_id")
-
-            result = await AppointmentRepository.create_appointment(
-                tenant_id, bed_id, slot_id, landlord_id,'tenant'
-            )
-
-            # ack back to landlord
-            await self.send_json({
-                "status": "success",
-                "action": "appointment_booking_request_created_by_landlord",
-                "message": result,
-            })
         # ─── RESCHEDULE ─────────────────────────────────────────
         elif action == "reschedule_appointment_by_tenant":
             appt_id = data.get("appointment_id")
@@ -393,13 +405,13 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
                     "message":"appointment_id & slotId required"
                 })
             res = await AppointmentRepository.reschedule_appointment(appt_id, slot_id,'tenant')
-            # notify tenant
+            # notify landlord
             await self.channel_layer.group_send(
-                f"tenant_{res['tenantId']}_room_{res['roomId']}",
-                {"type":"appointment_rescheduled","message":res}
+                f"landlord_{res['landlordId']}_property_{res['propertyId']}",
+                {"type":"appointment_rescheduled_notification_by_tenant","message":res}
             )
             await self.send_json({
-                "action": "reschedule_appointment_by_tenant",
+                "action": "appointment_rescheduled_notification_by_tenant",
                 "data": res
             })
         # ─── CONFIRM ─────────────────────────────────────────────
@@ -412,12 +424,12 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
                 })
             # perform the confirm
             res = await AppointmentRepository.confirm_appointment(appt_id,'tenant')
-            # notify tenant
+            # ➊ Notify landlord
             await self.channel_layer.group_send(
-                f"tenant_{res['tenantId']}_room_{res['roomId']}",
+                f"landlord_{res['landlordId']}_property_{res['roomId']}",  
                 {
-                  "type": "appointment_confirmed",
-                  "message": res
+                    "type": "appointment_confirmed_notification",  # handler name in landlord consumer
+                    "message": res
                 }
             )
             # ack back to landlord
@@ -444,8 +456,38 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
     async def send_json(self, content):
         await self.send(text_data=json.dumps(content))
 
+    async def appointment_created(self, event):
+        await self.send_json({
+            "action": "appointment_booking_request_created_by_tenant",
+            "data": event["message"],
+        })
 
+    async def appointment_cancelled_notification_by_landlord(self, event):
+            await self.send_json({
+                "action": "appointment_cancelled_notification_by_landlord",
+                "data": event["message"],
+            })
 
+    async def appointment_declined_notification_by_landlord(self, event):
+            await self.send_json({
+                "action": "appointment_declined_notification_by_landlord",
+                "data": event["message"],
+            })
+
+    async def appointment_confirmed_notification_by_landlord(self, event):
+        print(f'appointment_confirmed_notification_by_landlord {event}')
+        await self.send(text_data=json.dumps({
+            "status": "success",
+            "action": "appointment_confirmed_notification_by_landlord",
+            "data": event["message"],
+        }))
+
+    async def appointment_rescheduled(self, event):
+        await self.send_json({
+            "action": "reschedule_appointment_by_landlord",
+            "data": event["message"],
+        })
+        
 class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
@@ -462,7 +504,7 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data):
         data   = json.loads(text_data)
         action = data.get("action")
-        print(f'actiondd {action}')
+        print(f'actiondd {action} {data}')
         # capture landlord & property if provided
         if "landlord_id"  in data:
             self.landlord_id  = data["landlord_id"]
@@ -478,21 +520,19 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
 
         # ─── LIST & FILTER ───────────────────────────────────────
         if action == "get_landlord_appointments":
-            appts = await AppointmentRepository.fetch_landlord_appointments(self.landlord_id,
-                                           self.property_id,
-                                           filters=None)
-            print(f'apptsdd {appts}')
+            appts = await AppointmentRepository.fetch_landlord_appointments(
+                self.landlord_id, self.property_id, filters=None
+            )
             await self.send_json({
                 "action": "get_landlord_appointments",
                 "data": appts
             })
 
         elif action == "filter_landlord_appointments":
-            # expects { filters: { status, dateFrom, dateTo, tenantId?, bedId? } }
             filters = data.get("filters", {})
-            appts = await AppointmentRepository.fetch_landlord_appointments(self.landlord_id,
-                                           self.property_id,
-                                           filters=filters)
+            appts = await AppointmentRepository.fetch_landlord_appointments(
+                self.landlord_id, self.property_id, filters=filters
+            )
             await self.send_json({
                 "action": "filter_landlord_appointments",
                 "data": appts
@@ -506,10 +546,8 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
             landlord_id = data.get("landlord_id")
 
             result = await AppointmentRepository.create_appointment(
-                tenant_id, bed_id, slot_id, landlord_id,'landlord'
+                tenant_id, bed_id, slot_id, landlord_id, 'landlord'
             )
-
-            # ack back to landlord
             await self.send_json({
                 "status": "success",
                 "action": "appointment_booking_request_created_by_landlord",
@@ -521,8 +559,8 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
             appt_id = data.get("appointment_id")
             if not appt_id:
                 return await self.send_json({
-                    "status":"error",
-                    "message":"appointment_id required"
+                    "status": "error",
+                    "message": "appointment_id required"
                 })
             detail = await AppointmentRepository.fetch_appointment_detail(appt_id)
             await self.send_json({
@@ -536,8 +574,8 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
             landlordId = data.get('landlordId')
             if not propertyId:
                 return await self.send_json({
-                    "status":"error",
-                    "message":"propertyId required"
+                    "status": "error",
+                    "message": "propertyId required"
                 })
             slots = await AppointmentRepository.get_available_slots(propertyId, landlordId)
             await self.send_json({
@@ -550,75 +588,90 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
             appt_id = data.get("appointment_id")
             if not appt_id:
                 return await self.send_json({
-                    "status":"error",
-                    "message":"appointment_id required"
+                    "status": "error",
+                    "message": "appointment_id required"
                 })
-            res = await AppointmentRepository.cancel_appointment(appt_id,'landlord')
-            # notify tenant
+            res = await AppointmentRepository.cancel_appointment(appt_id, 'landlord')
+
+            # notify both tenant groups
             await self.channel_layer.group_send(
                 f"tenant_{res['tenantId']}_room_{res['roomId']}",
-                {"type":"appointment_cancelled","message":res}
+                {"type": "appointment_cancelled_notification_by_landlord", "message": res}
             )
+            await self.channel_layer.group_send(
+                f"tenant_{res['tenantId']}",
+                {"type": "appointment_cancelled_notification_by_landlord", "message": res}
+            )
+
             await self.send_json({
                 "action": "cancel_appointment_by_landlord",
                 "data": res
             })
 
+        # ─── DECLINE ─────────────────────────────────────────────
         elif action == "decline_appointment_by_landlord":
             appt_id = data.get("appointment_id")
             if not appt_id:
                 return await self.send_json({
-                    "status":"error",
-                    "message":"appointment_id required"
+                    "status": "error",
+                    "message": "appointment_id required"
                 })
-            res = await AppointmentRepository.decline_appointment(appt_id,'landlord')
-            # notify tenant
+            res = await AppointmentRepository.decline_appointment(appt_id, 'landlord')
+
+            # notify both tenant groups
             await self.channel_layer.group_send(
                 f"tenant_{res['tenantId']}_room_{res['roomId']}",
-                {"type":"appointment_cancelled","message":res}
+                {"type": "appointment_declined_notification_by_landlord", "message": res}
             )
+            await self.channel_layer.group_send(
+                f"tenant_{res['tenantId']}",
+                {"type": "appointment_declined_notification_by_landlord", "message": res}
+            )
+
             await self.send_json({
                 "action": "decline_appointment_by_landlord",
                 "data": res
             })
+
         # ─── RESCHEDULE ─────────────────────────────────────────
         elif action == "reschedule_appointment_by_landlord":
             appt_id = data.get("appointment_id")
             slot_id = data.get("slotId")
             if not appt_id or not slot_id:
                 return await self.send_json({
-                    "status":"error",
-                    "message":"appointment_id & slotId required"
+                    "status": "error",
+                    "message": "appointment_id & slotId required"
                 })
-            res = await AppointmentRepository.reschedule_appointment(appt_id, slot_id,'landlord')
-            # notify tenant
-            await self.channel_layer.group_send(
-                f"tenant_{res['tenantId']}_room_{res['roomId']}",
-                {"type":"appointment_rescheduled","message":res}
+            res = await AppointmentRepository.reschedule_appointment(
+                appt_id, slot_id, 'landlord'
             )
             await self.send_json({
                 "action": "reschedule_appointment_by_landlord",
                 "data": res
             })
+
         # ─── CONFIRM ─────────────────────────────────────────────
         elif action == "confirm_appointment_by_landlord":
-            appt_id   = data.get("appointment_id")
+            appt_id = data.get("appointment_id")
             if not appt_id:
                 return await self.send_json({
                     "status": "error",
                     "message": "appointment_id required"
                 })
-            # perform the confirm
-            res = await AppointmentRepository.confirm_appointment(appt_id,'landlord')
-            # notify tenant
-            await self.channel_layer.group_send(
+            res = await AppointmentRepository.confirm_appointment(appt_id, 'landlord')
+            print(f"tenant_{res['tenantId']}")
+            print(f"tenant_{res['tenantId']}_room_{res['roomId']}")
+            print(f'self.channel_layerdc {self.channel_layer}')
+            # notify both tenant groups
+            for group in (
                 f"tenant_{res['tenantId']}_room_{res['roomId']}",
-                {
-                  "type": "appointment_confirmed",
-                  "message": res
-                }
-            )
-            # ack back to landlord
+                f"tenant_{res['tenantId']}",
+            ):
+                await self.channel_layer.group_send(
+                    group,
+                    {"type": "appointment_confirmed_notification_by_landlord", "message": res}
+                )
+
             await self.send_json({
                 "action": "confirm_appointment_by_landlord",
                 "data": res
@@ -626,10 +679,52 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
 
         else:
             await self.send_json({
-                "status":"error",
-                "message":f"Unknown action {action}"
+                "status": "error",
+                "message": f"Unknown action {action}"
             })
+
 
     async def send_json(self, content):
         await self.send(text_data=json.dumps(content))
 
+    async def appointment_created_notification_by_tenant(self, event):
+        print(f'appointment_created_notification_by_tenant recieved {event}')
+        """
+        Called when TenantAppointmentConsumer pushes an 'appointment_created' event
+        """
+        appts = await AppointmentRepository.fetch_landlord_appointments(
+                event['message']['landlordId'], bed_id=event['message']['bedId'],tenant_id=event['message']['tenantId'], filters=None
+            )
+        await self.send_json({
+            "action": "appointment_created_notification_by_tenant",
+            "data": appts,
+        })
+        
+    async def appointment_cancelled_notification_by_tenant(self, event):
+        """
+        Called when TenantAppointmentConsumer pushes an 'appointment_cancelled' event
+        """
+        print(f'appointment_cancelled_notification_by_tenant {event}')
+        await self.send_json({
+            "action": "appointment_cancelled_notification_by_tenant",
+            "data": event["message"],
+        })
+        
+    async def appointment_confirmed(self, event):
+        """
+        Handle a tenant-confirmed appointment.
+        """
+        await self.send_json({
+            "action": "confirm_appointment_by_tenant",
+            "data": event["message"],
+        })
+        
+    async def appointment_rescheduled_notification_by_tenant(self, event):
+        """
+        Receive a reschedule notification from a tenant,
+        and forward it to the landlord client.
+        """
+        await self.send_json({
+            "action": "appointment_rescheduled_notification_by_tenant",
+            "data": event["message"],
+        })

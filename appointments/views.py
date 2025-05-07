@@ -10,6 +10,8 @@ from .models import AppointmentBookingModel
 from response import Response as ResponseData
 from collections import defaultdict
 from django.utils.timezone import now
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 @api_view(["POST"])
 def get_tenant_appointments(request):
@@ -225,7 +227,7 @@ def book_appointment(request):
         )
 
     # Create new booking
-    AppointmentBookingModel.objects.create(
+    appt = AppointmentBookingModel.objects.create(
         tenant=tenant,
         landlord=landlord,
         bed=bed,
@@ -233,7 +235,35 @@ def book_appointment(request):
         status="pending",
         initiated_by="landlord"
     )
+    # Prepare your notification payload
+    notification = {
+        "type": "appointment_created_notification_by_tenant",
+        "message": {
+            "appointmentId": appt.id,
+            "tenantId":   tenant.id,
+            "landlordId": landlord.id,
+            "bedId":      bed.id,
+            "roomId":     bed.room.id,
+            "slotId":     slot.id,
+            "status":     appt.status,
+        }
+    }
 
+    # Grab the channel layer
+    channel_layer = get_channel_layer()
+
+    # Always notify the landlord’s global group
+    async_to_sync(channel_layer.group_send)(
+        f"landlord_{landlord_id}", 
+        notification
+    )
+
+    # And if you maintain a per-property group, notify that too
+    async_to_sync(channel_layer.group_send)(
+        f"landlord_{landlord_id}_property_{bed.room.property.id}",
+        notification
+    )
+    print('appointment_created_notification_by_tenant notification sent')
     # Only return a success‐without‐data message
     return Response(
         ResponseData.success_without_data("Appointment booked successfully."),
