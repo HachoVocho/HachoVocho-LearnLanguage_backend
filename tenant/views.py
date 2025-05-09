@@ -9,6 +9,7 @@ from datetime import timedelta
 # At the top of your views.py
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch  # Add this import
+from interest_requests.consumers import compute_personality_match
 from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, LandlordPropertyRoomDetailsModel, LandlordRoomWiseBedModel
 from payments.models import TenantPaymentModel
 from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
@@ -510,7 +511,11 @@ def get_tenant_profile_details(request):
         key='title', 
         selected_id=personality.food_habit.id if personality and personality.food_habit else None
     )
-
+    countries = get_options(
+        CountryModel.objects, 
+        key='name', 
+        selected_id=personality.country.id if personality and personality.country else None
+    )
     document_types = TenantDocumentTypeModel.objects.filter(is_active=True, is_deleted=False)
     document_types_data = [
         {
@@ -544,6 +549,7 @@ def get_tenant_profile_details(request):
     if personality and personality.socializing_habit: filled_personality += 1
     if personality and personality.relationship_status: filled_personality += 1
     if personality and personality.food_habit: filled_personality += 1
+    if personality and personality.country: filled_personality += 1
     #if personality and personality.pet_lover: filled_personality += 1
     personality_completion = int((filled_personality / total_personality_fields) * 100)
 
@@ -570,6 +576,7 @@ def get_tenant_profile_details(request):
             "socializing_habits": socializing_habits,
             "relationship_statuses": relationship_statuses,
             "food_habits": food_habits,
+            "country" : countries
         },
         "profile_completion": profile_completion,
         "personality_completion": personality_completion,
@@ -957,7 +964,7 @@ def get_properties_by_city_overview(request):
                         print("No base preferences found either")
 
                 # Compute match score
-                score = 0
+                """score = 0
                 if tenant_persona and lan:
                     print(f"\nCalculating match score for bed {bed.id}")
                     print(f"Tenant persona exists, {len(lan)} landlord answers available")
@@ -999,8 +1006,12 @@ def get_properties_by_city_overview(request):
                     print("Skipping score calculation - missing tenant persona or landlord answers")
                 
                 pct = round((score / total_possible) * 100, 2) if total_possible else 0.0
-                print(f"\nFinal match percentage for bed {bed.id}: {pct}%")
-                bed_matches.append(pct)
+                print(f"\nFinal match percentage for bed {bed.id}: {pct}%")"""
+                overall_match, breakdown = compute_personality_match(tenant_persona, lan)
+                print("Overall match:", overall_match)
+                for field, pct in breakdown.items():
+                    print(f" • {field}: {pct}%")
+                bed_matches.append(overall_match)
                 print(f"Added to bed_matches (now has {len(bed_matches)} items)")
 
         print("\n=== FINISHED BED MATCH CALCULATION ===")
@@ -1040,7 +1051,8 @@ def get_properties_by_city_overview(request):
             "currency_symbol" : currency_symbol,
             "currency" : currency,
             "min_price": min_price,
-            "overall_personality_match_percentage": overall,
+            "overall_personality_match_percentage": overall_match,
+            
         })
 
     return Response(
@@ -1161,7 +1173,7 @@ def get_property_details(request):
                 if base:
                     lan = list(base.answers.all())
 
-            score = 0
+            """score = 0
             if tenant_persona and lan:
                 for f in pfields:
                     choice = getattr(tenant_persona, f"{f}_id", None)
@@ -1177,8 +1189,11 @@ def get_property_details(request):
                     if idx is not None:
                         opts = len(sorted_l)
                         score += ((opts - idx) / opts) * max_marks
-            match_pct = round((score / tot) * 100, 2) if tot else 0.0
-
+            match_pct = round((score / tot) * 100, 2) if tot else 0.0"""
+            overall_match, breakdown = compute_personality_match(tenant_persona, lan)
+            print("Overall match:", overall_match)
+            for field, pct in breakdown.items():
+                print(f" • {field}: {pct}%")
             beds_data.append({
                 "bed_id": bed.id,
                 "bed_number": bed.bed_number,
@@ -1191,9 +1206,10 @@ def get_property_details(request):
                 "availability_end_date": bed.availability_end_date.strftime("%d %b %y")
                     if getattr(bed, 'availability_end_date', None) else "",
                 "bed_media": bed_media,
-                "personality_match_percentage": match_pct,
+                "personality_match_percentage": overall_match,
                 "is_phone_verified": is_phone_verified,
                 "is_payment_active": is_payment_active,
+                'details_of_personality_match' : breakdown
             })
 
         rooms_data.append({

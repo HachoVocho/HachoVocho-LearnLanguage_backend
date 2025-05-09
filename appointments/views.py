@@ -217,6 +217,7 @@ def book_appointment(request):
         tenant=tenant,
         landlord=landlord,
         bed=bed,
+        status='confirmed',
         time_slot=slot,
         is_active=True,
         is_deleted=False
@@ -263,9 +264,46 @@ def book_appointment(request):
         f"landlord_{landlord_id}_property_{bed.room.property.id}",
         notification
     )
+    async_to_sync(channel_layer.group_send)(
+        f"property_{bed.room.property.id}_bed_{bed.id}",
+        notification
+    )
+    async_to_sync(channel_layer.group_send)(
+        f"property_{bed.room.property.id}",
+        notification
+    )
     print('appointment_created_notification_by_tenant notification sent')
     # Only return a success‐without‐data message
+    slot = appt.time_slot
+    bed = appt.bed
+    room = bed.room
+    property = room.property if room else None
+    
+    result = {
+                "appointmentId": appt.id,
+                "landlordId": appt.landlord.id,
+                'propertyId' : property.id,
+                "landlordFirstName": appt.landlord.first_name,
+                "landlordLastName": appt.landlord.last_name,
+                "tenantId": appt.tenant.id,
+                "bedId": bed.id,
+                "bedNumber": bed.bed_number,
+                "roomId": room.id if room else None,
+                "roomNumber": room.room_name if room else None,
+                "roomType": room.room_type.type_name if (room and room.room_type) else None,
+                "propertyId": property.id if property else None,
+                "propertyName": property.property_name if property else None,
+                "propertyAddress": property.property_address if property else None,
+                "date": slot.availability.date.strftime("%Y-%m-%d"),
+                "startTime": slot.start_time.strftime("%H:%M"),
+                "endTime": slot.end_time.strftime("%H:%M"),
+                "slotId": slot.id,
+                "status": appt.status,
+                "createdAt": appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "initiatedBy": appt.initiated_by,
+                'lastUpdatedBy' : appt.last_updated_by
+            }
     return Response(
-        ResponseData.success_without_data("Appointment booked successfully."),
+        ResponseData.success(result,"Appointment booked successfully."),
         status=status.HTTP_201_CREATED
     )

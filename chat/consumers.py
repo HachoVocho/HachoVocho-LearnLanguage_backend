@@ -87,6 +87,9 @@ class TenantChatConsumer(_BaseChatConsumer):
         data = json.loads(text_data)
         action = data.get("action")
         print(f'data ${data}')
+        if data.get("type") == "ping":
+            await self.send(text_data=json.dumps({"type": "pong"}))
+            return
         if action == "connection_established":
             tenant_user = f"tenant:{data['sender'].split(':',1)[1]}"
             landlord_user = data["receiver"]
@@ -288,7 +291,9 @@ class LandlordChatConsumer(_BaseChatConsumer):
         data = json.loads(text_data)
         action = data.get("action")
         print(f'incoming_data {data}')
-
+        if data.get("type") == "ping":
+            await self.send(text_data=json.dumps({"type": "pong"}))
+            return
         if action == "connection_established":
             landlord_user = f"landlord:{data['sender'].split(':',1)[1]}"
             tenant_user   = data["receiver"]

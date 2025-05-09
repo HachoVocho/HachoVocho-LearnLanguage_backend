@@ -1,11 +1,15 @@
 
 from django.utils import timezone
-from datetime import timedelta
+from datetime import datetime, timedelta
 from channels.db import database_sync_to_async
+
+from localization.models import CityModel
+from user.fetch_match_details import compute_personality_match
+
 from .models import AppointmentBookingModel
-from landlord.models import LandlordRoomWiseBedModel
+from landlord.models import LandlordBasePreferenceModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilitySlotModel, LandlordAvailabilityModel
-from tenant.models import TenantDetailsModel
+from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from landlord.models import LandlordDetailsModel
 import json
 from typing import Optional, Dict, Any
@@ -74,7 +78,12 @@ class AppointmentRepository:
             bed = appt.bed
             room = bed.room
             property = room.property if room else None
-            
+            city_obj = CityModel.objects.filter(id=property.property_city.id).first()
+            print(f'city_obj {city_obj}')
+            currency_symbol = (
+                city_obj.state.country.currency_symbol
+                if city_obj and city_obj.state and city_obj.state.country else ""
+            )
             out.append({
                 "appointmentId": appt.id,
                 "landlordId": appt.landlord.id,
@@ -85,7 +94,9 @@ class AppointmentRepository:
                 "bedId": bed.id,
                 "bedNumber": bed.bed_number,
                 "roomId": room.id if room else None,
-                "roomNumber": room.room_name if room else None,
+                "roomName" : bed.room.room_name,
+                "rentAmount" : str(bed.rent_amount) + f' {currency_symbol}',
+                "rentType" : 'Month' if bed.is_rent_monthly else 'Day', 
                 "roomType": room.room_type.type_name if (room and room.room_type) else None,
                 "propertyId": property.id if property else None,
                 "propertyName": property.property_name if property else None,
@@ -150,9 +161,48 @@ class AppointmentRepository:
             "time_slot__availability__date",
             "time_slot__start_time",
         )
+        # Personality matching setup
+        personality_fields = [
+            "occupation", "country", "religion", "income_range",
+            "smoking_habit", "drinking_habit", "socializing_habit",
+            "relationship_status", "food_habit", "pet_lover"
+        ]
+        max_marks = 10
+        total_possible = len(personality_fields) * max_marks
         out = []
         for appt in qs:
+            # Get landlord's preference answers for this bed
+            print(f'appt.bedfvfv {appt.bed.id}')
+            # Get tenant's personality details once
+            try:
+                tenant_persona = TenantPersonalityDetailsModel.objects.get(
+                    tenant_id=appt.tenant.id,
+                    is_active=True,
+                    is_deleted=False
+                )
+            except TenantPersonalityDetailsModel.DoesNotExist:
+                tenant_persona = None
+                print("   → No tenant personality details found")
+
+            landlord_answers_qs = list(appt.bed.tenant_preference_answers.all())
+            if not landlord_answers_qs:
+                base_pref = LandlordBasePreferenceModel.objects.filter(
+                    landlord_id=appt.bed.room.property.landlord.id
+                ).first()
+                if base_pref:
+                    landlord_answers_qs = list(base_pref.answers.all())
             slot = appt.time_slot
+            
+            overall, breakdown = compute_personality_match(tenant_persona, landlord_answers_qs)
+            print("Overall match:", overall)
+            for field, pct in breakdown.items():
+                print(f" • {field}: {pct}%")
+            city_obj = CityModel.objects.filter(id=appt.bed.room.property.property_city.id).first()
+            print(f'city_obj {city_obj}')
+            currency_symbol = (
+                city_obj.state.country.currency_symbol
+                if city_obj and city_obj.state and city_obj.state.country else ""
+            )
             out.append({
                 "appointmentId":   appt.id,
                 "tenantId":        appt.tenant.id,
@@ -160,6 +210,9 @@ class AppointmentRepository:
                 "tenantLastName":  appt.tenant.last_name,
                 "bedId":           appt.bed.id,
                 "bedNumber": appt.bed.bed_number,
+                "roomName" : appt.bed.room.room_name,
+                "rentAmount" : str(appt.bed.rent_amount) + f' {currency_symbol}',
+                "rentType" : 'Month' if appt.bed.is_rent_monthly else 'Day',
                 "date":            slot.availability.date.strftime("%Y-%m-%d"),
                 "startTime":       slot.start_time.strftime("%H:%M"),
                 "endTime":         slot.end_time.strftime("%H:%M"),
@@ -167,6 +220,8 @@ class AppointmentRepository:
                 "slotId":          slot.id,
                 "initiatedBy":     appt.initiated_by,
                 "lastUpdatedBy":   appt.last_updated_by,
+                "personality_match_percentage": overall,  # Added this field
+                'details_of_personality_match' : breakdown
             })
 
         # Sort by status priority
@@ -213,6 +268,12 @@ class AppointmentRepository:
         slot = appt.time_slot
         bed = appt.bed
         room = bed.room
+        city_obj = CityModel.objects.filter(id=room.property.property_city.id).first()
+        print(f'city_obj {city_obj}')
+        currency_symbol = (
+            city_obj.state.country.currency_symbol
+            if city_obj and city_obj.state and city_obj.state.country else ""
+        )
         return {
             "appointmentId": appt.id,
             "landlordId": appt.landlord.id,
@@ -223,6 +284,9 @@ class AppointmentRepository:
             "tenantLastName": appt.tenant.last_name,
             "bedId": bed.id,
             "bedNumber": bed.bed_number,
+            "roomName" : bed.room.room_name,
+            "rentType" : 'Month' if bed.is_rent_monthly else 'Day',
+            "rentAmount" : str(bed.rent_amount) + f' {currency_symbol}',
             "roomType": room.room_type.type_name if room.room_type else "",
             "date": slot.availability.date.strftime("%Y-%m-%d"),
             "startTime": slot.start_time.strftime("%H:%M"),
@@ -237,30 +301,60 @@ class AppointmentRepository:
     @staticmethod
     @database_sync_to_async
     def get_available_slots(property_id, landlord_id):
-        today = timezone.now().date()
-        end = today + timedelta(days=10)
-        qs = (LandlordAvailabilityModel.objects
-              .filter(landlord_id=landlord_id,
-                      property_id=property_id,
-                      date__range=[today, end],
-                      is_active=True,
-                      is_deleted=False)
-              .prefetch_related("time_slots"))
+        now = timezone.now()
+        today = now.date()
+        end_date = today + timedelta(days=10)
+
+        # get all availabilities in window
+        qs = (
+            LandlordAvailabilityModel.objects
+                .filter(
+                    landlord_id=landlord_id,
+                    property_id=property_id,
+                    date__range=[today, end_date],
+                    is_active=True,
+                    is_deleted=False,
+                )
+                # pull in slots pre-joined
+                .prefetch_related("time_slots")
+        )
 
         out = []
         for av in qs:
-            slots = av.time_slots.filter(is_active=True, is_deleted=False)
-            out.append({
-                "date": av.date.strftime("%Y-%m-%d"),
-                "slots": [
-                    {
-                        "slotId": s.id,
-                        "startTime": s.start_time.strftime("%H:%M"),
-                        "endTime": s.end_time.strftime("%H:%M")
-                    }
-                    for s in slots
-                ]
-            })
+            # filter out slots that are inactive, deleted, or already CONFIRMED
+            slots = (
+                av.time_slots.filter(
+                    is_active=True,
+                    is_deleted=False,
+                )
+                .exclude(
+                    slot_appointments__status='confirmed'
+                )
+            )
+
+            valid_slots = []
+            for s in slots:
+                # build a timezone‐aware datetime for slot end
+                slot_end_dt = timezone.make_aware(
+                    datetime.combine(av.date, s.end_time),
+                    timezone.get_current_timezone()
+                )
+                # skip any slot that’s already past
+                if slot_end_dt <= now:
+                    continue
+
+                valid_slots.append({
+                    "slotId": s.id,
+                    "startTime": s.start_time.strftime("%H:%M"),
+                    "endTime": s.end_time.strftime("%H:%M"),
+                })
+
+            if valid_slots:
+                out.append({
+                    "date": av.date.strftime("%Y-%m-%d"),
+                    "slots": valid_slots,
+                })
+
         return out
 
     @staticmethod
@@ -279,7 +373,8 @@ class AppointmentRepository:
             "tenantId": appt.tenant.id,
             "roomId": appt.bed.room.id,
             "landlordId" : appt.landlord.id,
-            "propertyId" : appt.bed.room.property.id
+            "propertyId" : appt.bed.room.property.id,
+            'lastUpdatedBy' : appt.last_updated_by
         }
 
     @staticmethod
@@ -340,6 +435,9 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
         data = json.loads(text_data)
         action = data.get("action")
         print(f'action {action} {data}')
+        if data.get("type") == "ping":
+            await self.send(text_data=json.dumps({"type": "pong"}))
+            return
         # Set landlord and bed id if provided
         if "tenant_id" in data:
             self.tenant_id = data["tenant_id"]
@@ -510,7 +608,9 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
             self.landlord_id  = data["landlord_id"]
         if "property_id"  in data:
             self.property_id  = data["property_id"]
-
+        if data.get("type") == "ping":
+            await self.send(text_data=json.dumps({"type": "pong"}))
+            return
         # join the group so updates can be broadcast
         if self.landlord_id and self.property_id:
             await self.channel_layer.group_add(

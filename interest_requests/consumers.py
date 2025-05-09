@@ -4,13 +4,17 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 import json
 from django.contrib.contenttypes.models import ContentType
+from appointments.consumers import AppointmentRepository
 from appointments.models import AppointmentBookingModel
 from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
+from localization.models import CityModel, CountryModel
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
+from user.fetch_match_details import compute_personality_match
 from .models import LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.views import build_all_tabs
 from django.db.models import Q
+
 
 class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -28,6 +32,9 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
             data = json.loads(text_data)
             action = data.get("action")
             print(f'action {action} {data}')
+            if data.get("type") == "ping":
+                await self.send(text_data=json.dumps({"type": "pong"}))
+                return
             # Set landlord and bed id if provided
             if "tenant_id" in data:
                 self.tenant_id = data["tenant_id"]
@@ -348,7 +355,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
         # 2) For each bed, find any interest request + appointment if accepted
         for bed in beds:
             print(f"\nProcessing bed id={bed.id}, bed_number={bed.bed_number}")
-
+            print(f'appt.bedfvfsvdsvvv {bed.id}')
             # Get landlord's preference answers for this bed
             landlord_answers_qs = list(bed.tenant_preference_answers.all())
             if not landlord_answers_qs:
@@ -359,7 +366,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                     landlord_answers_qs = list(base_pref.answers.all())
 
             # Calculate personality match percentage if tenant has persona
-            match_pct = 0.0
+            """match_pct = 0.0
             if tenant_persona and landlord_answers_qs:
                 total_score = 0
                 for field in personality_fields:
@@ -395,8 +402,11 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
 
                 match_pct = round((total_score / total_possible) * 100, 2) \
                         if total_possible else 0.0
-                print(f"   → Personality match percentage: {match_pct}%")
-
+                print(f"   → Personality match percentage: {match_pct}%")"""
+            overall, breakdown = compute_personality_match(tenant_persona, landlord_answers_qs)
+            print("Overall match:", overall)
+            for field, pct in breakdown.items():
+                print(f" • {field}: {pct}%")
             # check interest
             tenant_req = TenantInterestRequestModel.objects.filter(
                 tenant__id=tenant_id,
@@ -453,20 +463,28 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                     "status": appt.status,
                 }
                 print(f"   → Appointment details: {appointment_details}")
-
+            city_obj = CityModel.objects.filter(id=bed.room.property.property_city.id).first()
+            print(f'city_obj {city_obj}')
+            currency_symbol = (
+                city_obj.state.country.currency_symbol
+                if city_obj and city_obj.state and city_obj.state.country else ""
+            )
             entry = {
                 "bed_id": bed.id,
                 "landlord_id" : bed.room.property.landlord.id,
                 "property_id" : bed.room.property.id,
                 "bed_number": bed.bed_number,
+                "room_name" : bed.room.room_name,
                 "is_active": bed.is_active,
                 "tenant_preference": bed.tenant_preference,
-                "price": str(bed.rent_amount),
+                "price": str(bed.rent_amount) + f' {currency_symbol}',
+                "rent_type" : 'Month' if bed.is_rent_monthly else 'Day',
                 "interest_status": interest_status,
                 "message": message,
                 "is_initiated_by_landlord": shown_by_landlord,
                 "appointment_details": appointment_details,
-                "personality_match_percentage": match_pct  # Added this field
+                "personality_match_percentage": overall,  # Added this field
+                'details_of_personality_match' : breakdown
             }
             result.append(entry)
 
@@ -625,6 +643,9 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             print(f'text_data {text_data}')
             action = data.get("action")
             print(f'action {action} {data}')
+            if data.get("type") == "ping":
+                await self.send(text_data=json.dumps({"type": "pong"}))
+                return
             # Set landlord and bed id if provided
             if "bed_id" in data:
                 self.bed_id = data["bed_id"]
@@ -817,6 +838,18 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             "message": message,
         }))
 
+    async def appointment_created_notification_by_tenant(self, event):
+        message = event['message']
+        print(f'appointment_created_notification_by_tenant recieved {event}')
+        """
+        Called when TenantAppointmentConsumer pushes an 'appointment_created' event
+        """
+        await self.send(text_data=json.dumps({
+            "status": "success",
+            "action": "appointment_created_notification_by_tenant",
+            "message": message,
+        }))
+        
     async def tenant_respond_landlord_request_notification(self, event):
         message = event['message']
         print(f"tenant_respond_landlord_request_notification received: {message}")
@@ -1137,7 +1170,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 except TenantPersonalityDetailsModel.DoesNotExist:
                     ten_persona = None
 
-            total_score = 0
+            """total_score = 0
             if ten_persona:
                 for field in personality_fields:
                     ans_id = getattr(ten_persona, f"{field}_id", None)
@@ -1169,8 +1202,11 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                     total_score += ((opts - idx) / opts) * max_marks
 
             match_pct = (round((total_score / total_possible) * 100, 2)
-                        if total_possible else 0.0)
-
+                        if total_possible else 0.0)"""
+            overall, breakdown = compute_personality_match(ten_persona, landlord_answers_qs)
+            print("Overall match:", overall)
+            for field, pct in breakdown.items():
+                print(f" • {field}: {pct}%")
             td = {
                 "id": tenant.id,
                 "first_name": tenant.first_name,
@@ -1180,24 +1216,29 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "date_of_birth": str(tenant.date_of_birth) or "",
                 "interest_status": status,
                 "message": message,
+                "rent_type" : 'Month' if bed_obj.is_rent_monthly else 'Day',
                 "bed_id": bed_obj.id if bed_obj else None,
                 "request_closed_by": getattr(payload, "request_closed_by", ""),
                 "is_initiated_by_landlord": (tag == "landlord_req"),
-                "personality_match_percentage": match_pct,
+                "personality_match_percentage": overall,
+                'details_of_personality_match' : breakdown
             }
             if bed_obj:
+                city_obj = CityModel.objects.filter(id=bed_obj.room.property.property_city.id).first()
+                print(f'city_obj {city_obj}')
+                currency_symbol = (
+                    city_obj.state.country.currency_symbol
+                    if city_obj and city_obj.state and city_obj.state.country else ""
+                )
                 td["bed_number"] = bed_obj.bed_number
-                td["rent_amount"] = str(bed_obj.rent_amount)
+                td["room_name"] = bed_obj.room.room_name
+                td["rent_amount"] = str(bed_obj.rent_amount) + f' {currency_symbol}'
 
             result.append(td)
 
         # 9) sort by match % desc
         result.sort(key=lambda x: x["personality_match_percentage"], reverse=True)
         return result
-
-
-
-
 
 
     @database_sync_to_async
@@ -1229,7 +1270,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "bed_id": bed_id,
                 "interest_status": req.status,
                 "message": req.tenant_message,
-                "id" : tenant_id,
+                "tenant_id" : tenant_id,
                 "is_initiated_by_landlord" : True
             }
 
@@ -1326,14 +1367,14 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "bed_id": bed_id,
                 "interest_status": req.status,
                 "message": req.landlord_message,
-                "id" : tenant_id,
+                "tenant_id" : tenant_id,
                 "is_initiated_by_landlord" : False,
             })
             return {
                 "bed_id": bed_id,
                 "interest_status": req.status,
                 "message": req.landlord_message,
-                "id" : tenant_id,
+                "tenant_id" : tenant_id,
                 "is_initiated_by_landlord" : False,
             }
         except TenantInterestRequestModel.DoesNotExist:

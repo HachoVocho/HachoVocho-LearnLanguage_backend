@@ -29,6 +29,9 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
             action = data.get("action")
             print(f'action {action} {data}')
             # Set tenant and bed id if provided
+            if data.get("type") == "ping":
+                await self.send(text_data=json.dumps({"type": "pong"}))
+                return
             if "tenant_id" in data:
                 self.tenant_id = data["tenant_id"]
             if "bed_id" in data:

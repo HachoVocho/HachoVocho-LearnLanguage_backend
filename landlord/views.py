@@ -208,10 +208,18 @@ def get_preference_questions(request):
         # build options list
         opts = []
         if q.content_type:
+            print("ContentType row:", q.content_type_id, 
+                q.content_type.app_label, 
+                q.content_type.model)
+
+            model = q.content_type.model_class()
+            print("Resolved model:", model)
             model = q.content_type.model_class()
             if model is not None:
                 for o in model.objects.filter(is_active=True, is_deleted=False):
                     opts.append({"id": o.id, "option_text": getattr(o, "title", str(o))})
+        print(f'q.question_text {q.question_text}')
+        print(f'optsvsddv {opts}')
         qd["question_options"] = opts
 
         # decide which source we use
@@ -2549,6 +2557,7 @@ def save_landlord_base_preferences(request):
                 question=question,
                 content_type=ct,
                 object_id=option_id,
+                preference=preference,
                 defaults={
                     "preference": preference,
                     "is_active": True,

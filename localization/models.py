@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils.timezone import now
 
 class CountryModel(models.Model):
     name = models.CharField(max_length=100)
@@ -21,6 +22,10 @@ class CountryModel(models.Model):
     longitude = models.CharField(max_length=100, blank=True, null=True)
     emoji = models.CharField(max_length=10, blank=True, null=True)
     emojiU = models.CharField(max_length=20, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=now)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.name
