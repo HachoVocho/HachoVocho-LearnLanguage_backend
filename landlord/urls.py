@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    check_property_exists,
     get_all_preferences_of_property,
     landlord_signup,
     get_preference_questions,
@@ -49,4 +50,9 @@ urlpatterns = [
     path('update_uploaded_landlord_media_selection/', update_uploaded_landlord_media_selection, name='update_uploaded_landlord_media_selection'),
     path('toggle_active_status/', toggle_active_status, name='toggle_active_status'),
     path('get_all_preferences_of_property/', get_all_preferences_of_property, name='get_all_preferences_of_property'), 
+    path(
+        'check_property_exists/',
+        check_property_exists,
+        name='check_property_exists'
+    ),
 ]

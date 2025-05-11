@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import json
 import os
 import re
@@ -21,7 +21,7 @@ from django.core.files import File
 from django.db.models import Prefetch
 from django.contrib.contenttypes.models import ContentType
 from .models import LandlordQuestionModel, LandlordAnswerModel, LandlordRoomWiseBedModel
-from .serializers import AddIdentityDocumentSerializer, LandlordBasePreferenceSerializer, LandlordBedDetailRequestSerializer, LandlordDocumentTypeSerializer, LandlordIdentityDocumentSerializer, LandlordPreferenceAnswerSerializer, LandlordProfileRequestSerializer, LandlordPropertyDetailRequestSerializer, LandlordPropertyDetailSerializer, LandlordQuestionRequestSerializer, LandlordRoomDetailRequestSerializer, LandlordSignupSerializer, PropertyAllPreferencesRequestSerializer, PropertyListRequestSerializer, TenantInterestRequestSerializer, ToggleActiveStatusSerializer, UpdateLandlordProfileSerializer
+from .serializers import AddIdentityDocumentSerializer, CheckPropertyExistsSerializer, LandlordBasePreferenceSerializer, LandlordBedDetailRequestSerializer, LandlordDocumentTypeSerializer, LandlordIdentityDocumentSerializer, LandlordPreferenceAnswerSerializer, LandlordProfileRequestSerializer, LandlordPropertyDetailRequestSerializer, LandlordPropertyDetailSerializer, LandlordQuestionRequestSerializer, LandlordRoomDetailRequestSerializer, LandlordSignupSerializer, PropertyAllPreferencesRequestSerializer, PropertyListRequestSerializer, TenantInterestRequestSerializer, ToggleActiveStatusSerializer, UpdateLandlordProfileSerializer
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import SessionAuthentication
@@ -466,6 +466,7 @@ def add_landlord_property_details(request):
     property_description = request.POST.get("propertyDescription", "")
     latitude = request.POST.get("latitude")
     longitude = request.POST.get("longitude")
+    streetNumber = request.POST.get('streetNumber')
     amenities_json = request.POST.get("amenities")
     rooms_json = request.POST.get("rooms")
     rooms_data = json.loads(rooms_json)
@@ -503,7 +504,8 @@ def add_landlord_property_details(request):
         floor=floor if floor else None,
         property_description=property_description,
         latitude=float(latitude) if latitude else None,
-        longitude=float(longitude) if longitude else None
+        longitude=float(longitude) if longitude else None,
+        street_number=streetNumber
     )
 
     # 5) Multiple property images/videos
@@ -2693,5 +2695,48 @@ def get_all_preferences_of_property(request):
             all_prefs,
             "All preferences fetched"
         ),
+        status=status.HTTP_200_OK
+    )
+    
+@api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def check_property_exists(request):
+    """
+    Check if a property with the given lat, lng and street_number exists.
+    """
+    print(f'check_property_exists_request {request.data}')
+    serializer = CheckPropertyExistsSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(
+            ResponseData.error(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    raw_lat    = serializer.validated_data['latitude']
+    raw_lng    = serializer.validated_data['longitude']
+    number = serializer.validated_data['street_number'].strip()
+
+    # 2. Define a quantizer for exactly 8 decimal places
+    eight_places = Decimal('0.' + '0' * 7 + '1')      # Decimal('0.00000001')
+
+    # 3. Quantize (pad) each value
+    lat = raw_lat.quantize(eight_places, rounding=ROUND_HALF_UP)
+    lng = raw_lng.quantize(eight_places, rounding=ROUND_HALF_UP)
+    # now lat == Decimal('52.41991520'), lng == Decimal('13.32132260')
+    print(f'lat {lat}')
+    print(f'lng {lng}')
+    # 4. Use those padded values in your query
+    exists = LandlordPropertyDetailsModel.objects.filter(
+        latitude=lat,
+        longitude=lng,
+        street_number__iexact=number,
+        is_active=True,
+        is_deleted=False
+    ).exists()
+    print(f'existssvsvsd {exists}')
+
+    return Response(
+        ResponseData.success(exists,'This address already exists'),
         status=status.HTTP_200_OK
     )
