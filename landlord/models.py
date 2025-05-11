@@ -19,9 +19,17 @@ class LandlordDetailsModel(models.Model):
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
+    last_login = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.email
+    @property
+    def user_type(self):
+        return 'landlord'
+    
+    @property
+    def is_authenticated(self):
+        return True
     
 class LandlordEmailVerificationModel(models.Model):
     landlord = models.ForeignKey(LandlordDetailsModel, on_delete=models.CASCADE, related_name='landlord_email_verifications')
@@ -62,6 +70,7 @@ class LandlordPropertyDetailsModel(models.Model):
     property_name = models.CharField(max_length=255)
     property_address = models.TextField()
     property_size = models.TextField()
+    street_number  = models.CharField(max_length=20, blank=True,default='')
     property_type = models.ForeignKey(LandlordPropertyTypeModel, on_delete=models.CASCADE, related_name='properties')
     property_city = models.ForeignKey(CityModel, on_delete=models.CASCADE, related_name='cities',blank=False,default='')
     pin_code = models.TextField(default='',blank=False)

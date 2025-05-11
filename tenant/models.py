@@ -19,10 +19,19 @@ class TenantDetailsModel(models.Model):
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
+    last_login = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.email
 
+    @property
+    def user_type(self):
+        return 'tenant'
+    
+    @property
+    def is_authenticated(self):
+        return True
+    
 class TenantPersonalityDetailsModel(models.Model):
     tenant = models.ForeignKey(TenantDetailsModel, on_delete=models.CASCADE, related_name='tenant_personality')
     occupation = models.ForeignKey(OccupationModel, on_delete=models.CASCADE, related_name='occupation',blank=True,null=True)

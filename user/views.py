@@ -4,30 +4,47 @@ from django.utils.timezone import now, timedelta
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-
 from landlord.models import LandlordDetailsModel, LandlordEmailVerificationModel
 from notifications.models import DeviceNotificationModel
 from tenant.models import TenantDetailsModel, TenantEmailVerificationModel
 from tenant.views import send_otp_email
+from rest_framework_simplejwt.exceptions import InvalidToken
+from rest_framework_simplejwt.tokens import UntypedToken
+
+from user.jwt_utils import get_tokens_for_user, refresh_access_token
 from user.static_strings import OTP_SMS_MESSAGE
 from .models import UserRoleModel
 from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated
 from .serializers import EmailVerificationSerializer, ForgotPasswordSerializer, LoginSerializer, PasswordUpdateSerializer
 from django.contrib.auth.hashers import check_password  # For verifying password hash
 from django.contrib.auth.hashers import make_password
 from .serializers import OTPSendSerializer, OTPVerifySerializer
 from .models import OTPModel  # Ensure your OTPModel is imported correctly
-from response import Response as ResponseData  # Assuming you have a ResponseData helper
+from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated  # Assuming you have a ResponseData helper
 from dotenv import load_dotenv
 import os
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.response import Response
+from rest_framework import status
+from django.contrib.auth import authenticate
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
 # Load environment variables
 load_dotenv()
 
 # Import our translation helper
 from translation_utils import get_translation, DEFAULT_LANGUAGE_CODE
     
-
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def email_verification(request):
     """API to handle email verification for both tenant and landlord."""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
@@ -119,22 +136,39 @@ def email_verification(request):
         )
     
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([AllowAny])
 def login(request):
-    """API to handle user login (for both tenant and landlord)."""
-    print(f'request.data {request.data}')
+    """Secure login API with enhanced JWT tokens"""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
     try:
         serializer = LoginSerializer(data=request.data)
-        if serializer.is_valid():
-            email = serializer.validated_data['email']
-            password = serializer.validated_data['password']
-            
-            tenant = TenantDetailsModel.objects.filter(email=email, is_active=True).first()
-            if tenant and tenant.password != '' and password != '':
+        if not serializer.is_valid():
+            return Response(
+                ResponseData.error(serializer.errors),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data['email']
+        password = serializer.validated_data['password']
+        
+        # Tenant login flow
+        tenant = TenantDetailsModel.objects.filter(email=email, is_active=True).first()
+        if tenant:
+            if tenant.password != '' and password != '':
                 if check_password(password, tenant.password):
+                    tokens = get_tokens_for_user(tenant)
                     message = get_translation("SUCC_LOGIN_TENANT", language_code)
                     return Response(
-                        ResponseData.success(data={'user_id': tenant.id, 'user_type': 'tenant'}, message=message),
+                        ResponseData.success(
+                            data={
+                                'user_id': tenant.id,
+                                'user_type': 'tenant',
+                                'email': tenant.email,  # Include email in response
+                                'tokens': tokens
+                            },
+                            message=message
+                        ),
                         status=status.HTTP_200_OK
                     )
                 else:
@@ -143,19 +177,39 @@ def login(request):
                         ResponseData.error(message),
                         status=status.HTTP_400_BAD_REQUEST
                     )
-            if tenant and password == '':
+            elif password == '':
+                tokens = get_tokens_for_user(tenant)
                 message = get_translation("SUCC_LOGIN_TENANT", language_code)
                 return Response(
-                    ResponseData.success(data={'user_id': tenant.id, 'user_type': 'tenant'}, message=message),
+                    ResponseData.success(
+                        data={
+                            'email': tenant.email,
+                            'user_id': tenant.id,
+                            'user_type': 'tenant',
+                            'tokens': tokens
+                        },
+                        message=message
+                    ),
                     status=status.HTTP_200_OK
                 )
 
-            landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
-            if landlord and landlord.password != '':
+        # Landlord login flow
+        landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
+        if landlord:
+            if landlord.password != '':
                 if check_password(password, landlord.password):
+                    tokens = get_tokens_for_user(landlord)
                     message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
                     return Response(
-                        ResponseData.success(data={'user_id': landlord.id, 'user_type': 'landlord'}, message=message),
+                        ResponseData.success(
+                            data={
+                                'user_id': landlord.id,
+                                'user_type': 'landlord',
+                                'email': landlord.email,
+                                'tokens': tokens
+                            },
+                            message=message
+                        ),
                         status=status.HTTP_200_OK
                     )
                 else:
@@ -164,20 +218,26 @@ def login(request):
                         ResponseData.error(message),
                         status=status.HTTP_400_BAD_REQUEST
                     )
-            if landlord and landlord.password == '':
+            elif landlord.password == '':
+                tokens = get_tokens_for_user(landlord)
                 message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
                 return Response(
-                    ResponseData.success(data={'user_id': landlord.id, 'user_type': 'landlord'}, message=message),
+                    ResponseData.success(
+                        data={
+                            'user_id': landlord.id,
+                            'email': landlord.email,
+                            'user_type': 'landlord',
+                            'tokens': tokens
+                        },
+                        message=message
+                    ),
                     status=status.HTTP_200_OK
                 )
-            message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD", language_code)
-            return Response(
-                ResponseData.error(message),
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
+        # No valid user found
+        message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD", language_code)
         return Response(
-            ResponseData.error(serializer.errors),
+            ResponseData.error(message),
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -186,8 +246,108 @@ def login(request):
             ResponseData.error(str(e)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    
+
 @api_view(["POST"])
+@permission_classes([AllowAny])
+def refresh_token(request):
+    """Secure token refresh with validation"""
+    print("\n[Token Refresh] === Starting token refresh process ===")
+    try:
+        refresh_token = request.data.get('refresh')
+        print(f"[Token Refresh] Incoming request data: {request.data}")
+
+        if not refresh_token:
+            print("[Token Refresh] ❌ Error: No refresh token provided")
+            return Response(
+                ResponseData.error("Refresh token is required"),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # decode & validate token claims
+        try:
+            print("[Token Refresh] Decoding token...")
+            untyped = UntypedToken(refresh_token)
+            payload = untyped.payload
+            print(f"[Token Refresh] Token payload: {payload}")
+        except InvalidToken as e:
+            print(f"[Token Refresh] ❌ InvalidToken error: {e}")
+            return Response(
+                ResponseData.error("Invalid refresh token"),
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        user_id    = payload.get('user_id')
+        user_type  = (payload.get('user_type') or "").lower()
+        email      = payload.get('email')
+        token_pw   = payload.get('pw_hash')
+
+        print(f"[Token Refresh] Extracted claims - user_id: {user_id}, user_type: {user_type}, email: {email}, pw_hash: {token_pw!r}")
+
+        # lookup active user
+        if user_type == 'tenant':
+            print("[Token Refresh] Looking up tenant user...")
+            user = TenantDetailsModel.objects.filter(
+                id=user_id, email=email, is_active=True
+            ).first()
+        else:
+            print("[Token Refresh] Looking up landlord user...")
+            user = LandlordDetailsModel.objects.filter(
+                id=user_id, email=email, is_active=True
+            ).first()
+
+        if not user:
+            print("[Token Refresh] ❌ Error: User not found or inactive")
+            return Response(
+                ResponseData.error("User not found"),
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        print(f"[Token Refresh] Found active user: {user}")
+
+        # compare password‐hash fragments
+        if hasattr(user, 'has_usable_password') and user.has_usable_password():
+            current_pw_fragment = user.password[:15]
+        else:
+            current_pw_fragment = ''
+        print(f"[Token Refresh] Password check - Current fragment: {current_pw_fragment!r}, Token fragment: {token_pw!r}")
+
+        if token_pw != current_pw_fragment:
+            print("[Token Refresh] ❌ Error: Password version mismatch")
+            return Response(
+                ResponseData.error("Password changed - please login again"),
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        print("[Token Refresh] ✅ Password version validated")
+
+        # rotate tokens
+        print("[Token Refresh] Generating new tokens...")
+        result = refresh_access_token(refresh_token)
+        if 'error' in result:
+            print(f"[Token Refresh] ❌ Refresh error: {result['error']}")
+            return Response(
+                ResponseData.error(result['error']),
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        print(f"[Token Refresh] ✅ Successfully generated new tokens. Result: {result}")
+        return Response(
+            ResponseData.success(data=result,message='Refresh token generated'),
+            status=status.HTTP_200_OK
+        )
+
+    except Exception as e:
+        print(f"[Token Refresh] ❌ Unexpected error: {e}")
+        import traceback; traceback.print_exc()
+        return Response(
+            ResponseData.error(str(e)),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    finally:
+        print("[Token Refresh] === Refresh process completed ===\n")
+        
+@api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def forgot_password(request):
     """API to handle forgot password request."""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
@@ -269,6 +429,8 @@ def forgot_password(request):
         )
     
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def update_password(request):
     """API to handle password update."""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
@@ -341,6 +503,8 @@ def send_sms(phone_number, message):
     return response
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def send_otp(request):
     """
     API to send an OTP SMS.
@@ -391,6 +555,8 @@ def send_otp(request):
         )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def verify_otp(request):
     """
     API to verify an OTP.

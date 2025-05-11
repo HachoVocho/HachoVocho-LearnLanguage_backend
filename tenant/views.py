@@ -18,12 +18,18 @@ from .serializers import PropertyDetailRequestSerializer
 from localization.models import CityModel, CountryModel
 from .serializers import AddIdentityDocumentSerializer, TenantDocumentTypeSerializer, TenantIdentityDocumentSerializer, TenantIdentityDocumentUpdateSerializer, TenantPreferenceAnswerSerializer, TenantPreferenceQuestionsAnswersRequestSerializer, TenantProfileRequestSerializer, TenantQuestionSerializer, TenantSignupSerializer
 from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated
 from .models import TenantDetailsModel, TenantDocumentTypeModel, TenantEmailVerificationModel, TenantIdentityVerificationFile, TenantIdentityVerificationModel, TenantPersonalityDetailsModel, TenantPreferenceAnswerModel, TenantPreferenceOptionModel, TenantPreferenceQuestionModel
 from django.core.mail import send_mail
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from django.contrib.auth.hashers import make_password
 from django.utils.timezone import now
 import random
-from landlord.models import LandlordPropertyDetailsModel, LandlordPropertyMediaModel
+from landlord.models import LandlordPropertyDetailsModel
 from .serializers import PropertyListRequestSerializer
 from .models import (
     TenantDetailsModel,
@@ -58,6 +64,8 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def tenant_signup(request):
     """API to handle tenant signup"""
     try:
@@ -184,6 +192,8 @@ def send_otp_email(email, otp):
         raise ValidationError(f"Failed to send email: {str(e)}")
     
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def save_tenant_preferences(request):
     """
     API to save or update tenant preferences into the database.
@@ -274,6 +284,8 @@ def save_tenant_preferences(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_tenant_preference_questions_answers(request):
     """
     API to fetch all tenant preference questions along with their answers (if any).
@@ -370,6 +382,8 @@ def get_tenant_preference_questions_answers(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_tenant_profile_details(request):
     """
     API to fetch tenant profile details along with personality details.
@@ -592,6 +606,8 @@ def get_tenant_profile_details(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def add_identity_document(request):
     print(f'request.data {request.data}')
     serializer = AddIdentityDocumentSerializer(data=request.data)
@@ -623,6 +639,8 @@ def add_identity_document(request):
     return Response(ResponseData.error(serializer.errors), status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_all_identity_documents(request):
     tenant_id = request.data.get('tenant_id')
     if not tenant_id:
@@ -653,6 +671,8 @@ def get_all_identity_documents(request):
     )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def update_identity_document(request):
     """
     API to update an existing identity document.
@@ -741,6 +761,8 @@ def delete_identity_document(request):
     return Response(ResponseData.success_without_data("Identity document deleted successfully."), status=status.HTTP_200_OK)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def update_tenant_profile_details(request):
     print(request.data)
     tenant_id = request.data.get('tenant_id')
@@ -781,6 +803,8 @@ def update_tenant_profile_details(request):
     )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def update_tenant_personality(request):
     print(f'request.data {request.data}')
     tenant_id = request.data.get('tenant_id')
@@ -836,6 +860,8 @@ def update_tenant_personality(request):
     )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_properties_by_city_overview(request):
     """
     API to fetch high-level property summaries in a city:
@@ -1067,6 +1093,8 @@ def get_properties_by_city_overview(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_property_details(request):
     """
     API to fetch detailed property info (rooms & beds), including:

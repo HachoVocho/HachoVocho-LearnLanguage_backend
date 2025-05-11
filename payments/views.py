@@ -6,13 +6,18 @@ from rest_framework import status
 from payments.models import TenantPaymentModel
 from tenant.models import TenantDetailsModel
 from .serializers import TenantPaymentSerializer
-from response import Response as ResponseData  # Adjust import according to your project structure
+from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated  # Adjust import according to your project structure
 from django.conf import settings
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 import braintree
-
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework_simplejwt.authentication import JWTAuthentication
 gateway = braintree.BraintreeGateway(
     braintree.Configuration(
         environment=getattr(braintree.Environment, settings.BRAINTREE_ENVIRONMENT),
@@ -41,6 +46,8 @@ def generate_client_token(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def process_payment(request):
     """
     Process a payment using a payment method nonce obtained from the Flutter app.
