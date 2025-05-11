@@ -5,6 +5,8 @@ from channels.db import database_sync_to_async
 
 from localization.models import CityModel
 from user.fetch_match_details import compute_personality_match
+from user.refresh_count_for_groups import refresh_counts_for_groups
+from user.ws_auth import authenticate_websocket
 
 from .models import AppointmentBookingModel
 from landlord.models import LandlordBasePreferenceModel, LandlordRoomWiseBedModel
@@ -14,6 +16,10 @@ from landlord.models import LandlordDetailsModel
 import json
 from typing import Optional, Dict, Any
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.contrib.auth.models import AnonymousUser
+from channels.generic.websocket import AsyncWebsocketConsumer
+from django.contrib.auth.models import AnonymousUser
+from rest_framework_simplejwt.tokens import AccessToken, TokenError
 
 class AppointmentRepository:
     @staticmethod
@@ -421,16 +427,81 @@ class AppointmentRepository:
     
     
 class TenantAppointmentConsumer(AsyncWebsocketConsumer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tenant_id = None  # Initialize as None
+        self.room_id = None    # Initialize as None
+
     async def connect(self):
-        await self.accept()
-        self.tenant_id = None
-        self.room_id = None
+        try:
+            # Initialize room_id (already done in __init__ but can be here too)
+            self.room_id = None
+            user, error = await authenticate_websocket(self.scope)
+            if isinstance(user, AnonymousUser):
+                print(f"[WS Auth] failed: {error}")
+                return await self.close(code=4001)
+
+
+            self.scope['user'] = user
+            self.tenant_id = user.id  # Now properly initialized
+            
+            await self.accept()
+            await self.send(json.dumps({
+                'type': 'connection_established',
+                'message': 'WebSocket connected',
+                'tenant_id': self.tenant_id
+            }))
+            
+        except Exception as e:
+            print(f"Connection error: {str(e)}")
+            await self.close(code=4002)  # Internal error
+            raise
+        
+    async def get_user_from_token(self, token):
+        """
+        Validate the JWT and return the corresponding user.
+        Logs any errors encountered.
+        """
+        from tenant.models import TenantDetailsModel
+
+        try:
+            access_token = AccessToken(token)
+            user_id = access_token['user_id']
+            # assume your “user” is actually TenantDetailsModel
+            return await TenantDetailsModel.objects.aget(id=user_id)
+        except TokenError as e:
+            # Some other token problem
+            print(f"[JWT] TokenError: {e}")
+        except TenantDetailsModel.DoesNotExist:
+            print(f"[JWT] No TenantDetailsModel for user_id {access_token.get('user_id')}")
+        except Exception as e:
+            # Catch-all for anything unexpected
+            print(f"[JWT] Unexpected error in get_user_from_token: {e!r}")
+
+        # On any failure, treat as anonymous
+        return AnonymousUser()
 
     async def disconnect(self, close_code):
-        if self.tenant_id and self.room_id:
-            group_name = f"tenant_{self.tenant_id}_room_{self.room_id}"
-            await self.channel_layer.group_discard(group_name, self.channel_name)
-
+        try:
+            # Safe access to attributes
+            if hasattr(self, 'tenant_id') and self.tenant_id and \
+               hasattr(self, 'room_id') and self.room_id:
+                await self.channel_layer.group_discard(
+                    f'tenant_{self.tenant_id}_room_{self.room_id}',
+                    self.channel_name
+                )
+            elif hasattr(self, 'tenant_id') and self.tenant_id:
+                await self.channel_layer.group_discard(
+                    f'tenant_{self.tenant_id}',
+                    self.channel_name
+                )
+        except Exception as e:
+            print(f"Disconnection error: {str(e)}")
+        finally:
+            # Clean up
+            self.tenant_id = None
+            self.room_id = None
+            
     async def receive(self, text_data):
         data = json.loads(text_data)
         action = data.get("action")
@@ -458,6 +529,9 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
                 "action": "get_tenant_appointments",
                 "data": appointments
             }))
+            tenant_group = f"tenant_dashboard_{self.tenant_id}"
+            print(f'tenant_group {tenant_group}')
+            await refresh_counts_for_groups([tenant_group])
         # ─── CANCEL ──────────────────────────────────────────────
         elif action == "cancel_appointment_by_tenant":
             appt_id = data.get("appointment_id")
@@ -539,7 +613,6 @@ class TenantAppointmentConsumer(AsyncWebsocketConsumer):
             # expects { filters: { status, dateFrom, dateTo, tenantId?, bedId? } }
             filters = data.get("filters", {})
             appts = await AppointmentRepository.fetch_tenant_appointments(self.tenant_id,
-                                           
                                            filters=filters)
             await self.send_json({
                 "action": "filter_tenant_appointments",
@@ -591,6 +664,11 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
         await self.accept()
         self.landlord_id = None
         self.property_id = None
+        user, error = await authenticate_websocket(self.scope)
+        if isinstance(user, AnonymousUser):
+            print(f"[WS Auth] failed: {error}")
+            return await self.close(code=4001)
+
 
     async def disconnect(self, close_code):
         if self.landlord_id and self.property_id:
@@ -627,6 +705,9 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
                 "action": "get_landlord_appointments",
                 "data": appts
             })
+            landlord_group = f"landlord_dashboard_{self.landlord_id}"
+            print(f'landlord_group {landlord_group}')
+            await refresh_counts_for_groups([landlord_group])
 
         elif action == "filter_landlord_appointments":
             filters = data.get("filters", {})
@@ -692,7 +773,10 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
                     "message": "appointment_id required"
                 })
             res = await AppointmentRepository.cancel_appointment(appt_id, 'landlord')
-
+            tenant_group = f"tenant_dashboard_{res.get('tenantId')}"
+            landlord_group = f"landlord_dashboard_{self.landlord_id}"
+            print(f'tenant_group {tenant_group}')
+            await refresh_counts_for_groups([tenant_group,landlord_group])
             # notify both tenant groups
             await self.channel_layer.group_send(
                 f"tenant_{res['tenantId']}_room_{res['roomId']}",

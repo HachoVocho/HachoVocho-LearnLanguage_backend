@@ -5,7 +5,8 @@ from .views import (
     login, 
     update_password,
     send_otp,
-    verify_otp
+    verify_otp,
+    refresh_token
 )
 
 urlpatterns = [
@@ -15,4 +16,5 @@ urlpatterns = [
     path('update_password/', update_password, name='update_password'),
     path('send_otp_for_mobile/', send_otp, name='send-otp'),
     path('verify_otp_for_mobile/', verify_otp, name='verify-otp'),
+    path('refresh_token/', refresh_token, name='refresh_token'),
 ]

@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+
+from user.ws_auth import authenticate_websocket
 from .models import LandlordAvailabilityModel
 from landlord.models import LandlordRoomWiseBedModel
 # Make sure to import AppointmentBookingModel from the correct app:
@@ -11,13 +13,17 @@ from landlord_availability.models import LandlordAvailabilitySlotModel
 from appointments.models import AppointmentBookingModel  # update 'your_app' to the actual app name
 from django.db.models import Q
 from django.utils.timezone import now
-
+from django.contrib.auth.models import AnonymousUser
 class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
         self.tenant_id = None
         self.bed_id = None
-
+        user, error = await authenticate_websocket(self.scope)
+        if isinstance(user, AnonymousUser):
+            print(f"[WS Auth] failed: {error}")
+            return await self.close(code=4001)
+        
     async def disconnect(self, close_code):
         if self.tenant_id and self.bed_id:
             group_name = f"tenant_{self.tenant_id}_bed_{self.bed_id}"

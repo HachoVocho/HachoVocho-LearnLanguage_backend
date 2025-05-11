@@ -9,7 +9,13 @@ from appointments.models import AppointmentBookingModel
 from interest_requests.models import LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.models import LandlordRoomWiseBedModel
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated
 
 def get_active_tenants_sync(bed_id):
     """
@@ -204,6 +210,8 @@ def get_active_tenants_sync(bed_id):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_active_tenants_view(request):
     """
     Expects a POST with JSON body containing {"bed_id": <id>}.

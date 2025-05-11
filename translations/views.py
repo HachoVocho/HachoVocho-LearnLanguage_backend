@@ -4,12 +4,21 @@ from rest_framework import status
 
 from landlord.models import LandlordDetailsModel
 from tenant.models import TenantDetailsModel
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated
 from .models import LanguageModel, TranslationModel
 from .serializers import LandlordLanguageUpdateSerializer, TenantLanguageUpdateSerializer, TranslationSerializer, TranslationListSerializer, LanguageSerializer
 from googletrans import Translator
 from django.core.cache import cache
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def add_translation(request):
     """
     API endpoint to add one or multiple translations and automatically translate to all languages.
@@ -102,6 +111,8 @@ def add_translation(request):
     }, status=status.HTTP_201_CREATED)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_translations(request):
     """
     API endpoint to fetch translations for a specific language code.
@@ -155,6 +166,8 @@ def get_translations(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def add_language(request):
     """
     API endpoint to add a new language.
@@ -181,80 +194,61 @@ def add_language(request):
     }, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(["POST"])
+@api_view(['POST'])
+@authentication_classes([SessionAuthentication, BasicAuthentication])
+@permission_classes([AllowAny])
 def get_languages(request):
     """
-    API endpoint to fetch all available languages.
-    Optionally accepts {"tenant_id": 123} or {"landlord_id": 456}.
-    If tenant_id is present and valid, its preferred_language.code is returned.
-    Otherwise, if landlord_id is present and valid, its preferred_language.code is returned.
-    Each language object also includes a "hello" key from TranslationModel.
+    Public endpoint that optionally personalizes based on a valid JWT.
     """
-    cache_key = "languages_all"
-    cached_data = cache.get(cache_key)
+    try:
+        # Get cached languages
+        cache_key = "languages_all"
+        data = cache.get(cache_key)
+        if data is None:
+            languages = LanguageModel.objects.all()
+            data = LanguageSerializer(languages, many=True).data
+            cache.set(cache_key, data, 60*60)
 
-    # Determine preferred language code, giving priority to tenant_id
-    pref_code = None
-    tenant_id = request.data.get("tenant_id")
-    if tenant_id is not None:
-        try:
-            tenant = TenantDetailsModel.objects.get(id=tenant_id, is_active=True, is_deleted=False)
-            if tenant.preferred_language:
-                pref_code = tenant.preferred_language.code
-        except TenantDetailsModel.DoesNotExist:
-            pass
-    else:
-        landlord_id = request.data.get("landlord_id")
-        if landlord_id is not None:
-            try:
-                landlord = LandlordDetailsModel.objects.get(id=landlord_id, is_active=True, is_deleted=False)
-                if landlord.preferred_language:
-                    pref_code = landlord.preferred_language.code
-            except LandlordDetailsModel.DoesNotExist:
-                pass
-
-    # Function to enrich each language dict with its "hello" translation
-    def enrich_with_hello(data_list):
-        for lang in data_list:
+        # Enrich translations
+        for lang in data:
             t = TranslationModel.objects.filter(
-                language_id=lang["id"], key="helloLabel"
+                language_id=lang["id"], 
+                key="helloLabel"
             ).first()
             lang["hello"] = t.value if t else "Hello"
+        # Handle authenticated users
+        user = getattr(request, 'user', None)
+        pref_code = None
+        
+        if user and user.is_authenticated:
+            try:
+                if hasattr(user, 'tenantdetailsmodel'):
+                    pref = user.tenantdetailsmodel.preferred_language
+                elif hasattr(user, 'landlorddetailsmodel'):
+                    pref = user.landlorddetailsmodel.preferred_language
+                
+                pref_code = pref.code if pref and hasattr(pref, 'code') else None
+            except Exception as e:
+                print(f"Error getting preferred language: {e}")
 
-    if cached_data:
-        # Update the 'hello' translation for each cached language
-        enrich_with_hello(cached_data)
-        response = {
+        return Response({
             "success": True,
-            "message": "Languages fetched successfully (from cache).",
-            "data":   cached_data
-        }
-        if pref_code:
-            response["preferred_language"] = pref_code
-        return Response(response, status=status.HTTP_200_OK)
+            "message": "Languages fetched successfully.",
+            "data": data,
+            "preferred_language": pref_code if pref_code else None
+        }, status=status.HTTP_200_OK)
 
-    # Fetch fresh from DB
-    languages = LanguageModel.objects.all()
-    serializer = LanguageSerializer(languages, many=True, context={"request": request})
-    data = serializer.data  # list of {id, code, name}
-
-    # Enrich with "hello" per language
-    enrich_with_hello(data)
-
-    # Cache for next time (1 hour)
-    cache.set(cache_key, data, timeout=60 * 60)
-
-    response = {
-        "success": True,
-        "message": "Languages fetched successfully.",
-        "data":   data
-    }
-    if pref_code:
-        response["preferred_language"] = pref_code
-
-    return Response(response, status=status.HTTP_200_OK)
-    
+    except Exception as e:
+        return Response({
+            "success": False,
+            "error": str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def set_tenant_language(request):
     """
     API endpoint to update a tenant's preferred language.
@@ -298,6 +292,8 @@ def set_tenant_language(request):
     
     
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def set_landlord_language(request):
     """
     API endpoint to update a tenant's preferred language.

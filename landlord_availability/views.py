@@ -5,10 +5,18 @@ from django.utils.timezone import now
 from landlord.models import LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomWiseBedModel
 from .models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
 from .serializers import AddLandlordAvailabilitySerializer, GetLandlordAvailabilityByBedSerializer, GetLandlordAvailabilitySerializer
-from response import Response as ResponseData  # Importing ResponseData class
+from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated  # Importing ResponseData class
 import datetime
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def add_landlord_availability(request):
     """
     API to add landlord availability for a specific property on a given date.
@@ -108,6 +116,8 @@ def add_landlord_availability(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_availability_by_month(request):
     """
     API to fetch all landlord availabilities for a specific property,
@@ -177,6 +187,8 @@ def get_landlord_availability_by_month(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_availability_by_property(request):
     """
     API to fetch all future availabilities for the property

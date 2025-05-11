@@ -8,13 +8,14 @@ from channels.db import database_sync_to_async
 from django.db.models import Q
 
 from tenant.models import TenantDetailsModel
+from user.refresh_count_for_groups import refresh_counts_for_groups
+from user.ws_auth import authenticate_websocket
 
 from .models import ChatMessageModel
 from landlord.models import LandlordDetailsModel
-
+from django.contrib.auth.models import AnonymousUser
 # Keep track of who’s in each group
 GROUP_MEMBERS = {}
-
 #
 # ─── Shared Base Logic ───────────────────────────────────────────────────────────
 #
@@ -82,6 +83,10 @@ class TenantChatConsumer(_BaseChatConsumer):
         await self.accept()
         self.role = "tenant"
         self.group_name = None
+        user, error = await authenticate_websocket(self.scope)
+        if isinstance(user, AnonymousUser):
+            print(f"[WS Auth] failed: {error}")
+            return await self.close(code=4001)
 
     async def receive(self, text_data):
         data = json.loads(text_data)
@@ -111,7 +116,9 @@ class TenantChatConsumer(_BaseChatConsumer):
             opposing = "landlord"
             read = opposing in GROUP_MEMBERS.get(group, ())
             new_message_id = await self.save_message(sender, receiver, text, read)
-
+            landlord_group = f"landlord_dashboard_{data['receiver'].split(':',1)[1]}"
+            print(f'landlord_group {landlord_group}')
+            await refresh_counts_for_groups([landlord_group])
             payload = {
                 "status":"success","action":"message_sent",
                 "sender":sender,"receiver":receiver,
@@ -176,7 +183,10 @@ class TenantChatConsumer(_BaseChatConsumer):
                 "status":"success","action":"summary_fetched",
                 "tenant":tenant_ref,"summary":summary
             }))
-
+            role, tenant_id = tenant_ref.split(":")
+            tenant_group = f"tenant_dashboard_{tenant_id}"
+            print(f'tenant_group {tenant_group}')
+            await refresh_counts_for_groups([tenant_group])
         else:
             await self.send(text_data=json.dumps({
                 "status":"error","message":"Invalid action"
@@ -286,7 +296,11 @@ class LandlordChatConsumer(_BaseChatConsumer):
         await self.accept()
         self.role = "landlord"
         self.group_name = None
-
+        user, error = await authenticate_websocket(self.scope)
+        if isinstance(user, AnonymousUser):
+            print(f"[WS Auth] failed: {error}")
+            return await self.close(code=4001)
+        
     async def receive(self, text_data):
         data = json.loads(text_data)
         action = data.get("action")
@@ -314,7 +328,9 @@ class LandlordChatConsumer(_BaseChatConsumer):
             group    = self.get_group_name(receiver, sender)
             read     = "tenant" in GROUP_MEMBERS.get(group, ())
             new_message_id = await self.save_message(sender, receiver, text, read)
-
+            tenant_group = f"tenant_dashboard_{data['receiver'].split(':',1)[1]}"
+            print(f'tenant_group {tenant_group}')
+            await refresh_counts_for_groups([tenant_group])
             payload = {
                 "status":"success","action":"message_sent",
                 "sender": sender, "receiver": receiver,
@@ -333,7 +349,6 @@ class LandlordChatConsumer(_BaseChatConsumer):
                 group = self.get_group_name(receiver, sender)
                 await self.channel_layer.group_add(group, self.channel_name)
                 GROUP_MEMBERS.setdefault(group, set()).add("landlord")
-
                 updated = await self.mark_messages_read(sender, receiver)
                 await self.channel_layer.group_send(
                     group,
@@ -355,6 +370,9 @@ class LandlordChatConsumer(_BaseChatConsumer):
             landlord_ref = f"landlord:{data['sender'].split(':',1)[1]}"
             summary = await self._get_landlord_chat_summary(landlord_ref)
             print(f'summary_landlord {summary}')
+            landlord_group = f"landlord_dashboard_{data['sender'].split(':',1)[1]}"
+            print(f'landlord_group {landlord_group}')
+            await refresh_counts_for_groups([landlord_group])
             await self.send(text_data=json.dumps({
                 "status":"success",
                 "action":"summary_fetched",

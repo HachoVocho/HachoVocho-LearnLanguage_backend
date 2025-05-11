@@ -6,21 +6,30 @@ import json
 from django.contrib.contenttypes.models import ContentType
 from appointments.consumers import AppointmentRepository
 from appointments.models import AppointmentBookingModel
-from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomWiseBedModel
+from landlord.models import LandlordBasePreferenceModel, LandlordBedMediaModel, LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomMediaModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
 from localization.models import CityModel, CountryModel
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from user.fetch_match_details import compute_personality_match
+from user.refresh_count_for_groups import refresh_counts_for_groups
+from user.ws_auth import authenticate_websocket
 from .models import LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.views import build_all_tabs
 from django.db.models import Q
-
-
+from django.contrib.auth.models import AnonymousUser
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from typing import Iterable
+    
 class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
         self.tenant_id = None
         self.room_id = None
+        user, error = await authenticate_websocket(self.scope)
+        if isinstance(user, AnonymousUser):
+            print(f"[WS Auth] failed: {error}")
+            return await self.close(code=4001)
 
     async def disconnect(self, close_code):
         if self.tenant_id and self.room_id:
@@ -52,6 +61,9 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 # Assuming you have self.bed_id and self.tenant_id already set.
                 result = await self.get_bed_statuses_for_tenant(self.room_id, self.tenant_id)
                 print(f'result44 {result}')
+                tenant_group = f"tenant_dashboard_{self.tenant_id}"
+                print(f'tenant_group {tenant_group}')
+                await refresh_counts_for_groups([tenant_group])
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "connection_established",
@@ -65,7 +77,10 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 print(f'result123 {result}')
                 bed_group = f"property_{property_id}_bed_{bed_id}"
                 prop_group = f"property_{property_id}"
-
+                landlord_id = result.get("landlord_id")  
+                landlord_group = f"landlord_dashboard_{landlord_id}"
+                tenant_group = f"tenant_dashboard_{tenant_id}"
+                await refresh_counts_for_groups([landlord_group,tenant_group])
                 for group in (bed_group, prop_group):
                     print(f"Sending notification to group {group}")
                     await self.channel_layer.group_send(
@@ -285,6 +300,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
 
         return {
             "bed_id": bed.id,
+            "landlord_id" : bed.room.property.landlord.id,
             "tenant_id" : tenant_id,
             'property_id' : property_id,
             "interest_status": req.status,
@@ -469,8 +485,35 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 city_obj.state.country.currency_symbol
                 if city_obj and city_obj.state and city_obj.state.country else ""
             )
+
+            # then serialize it
+            print(f'bed.room.room_typedvdv {bed.room.room_type}')
+            if bed.room.room_type.type_name == "Private":
+                print(f'bed.roomdsvsd {bed.room.id}')
+                media_qs = LandlordRoomMediaModel.objects.filter(
+                    room=bed.room,
+                    is_active=True,
+                    is_deleted=False,
+                )
+            else:
+                media_qs = LandlordBedMediaModel.objects.filter(
+                    bed=bed,
+                    is_active=True,
+                    is_deleted=False,
+                )
+            print(f'media_qsscsc {media_qs}')
+            bed_media = [
+                {
+                    "id": m.id,
+                    "url": m.file.url,
+                    "type": m.media_type,
+                }
+                for m in media_qs
+            ]
+            print(f'bed_mediaddd {bed_media}')
             entry = {
                 "bed_id": bed.id,
+                "bed_media" : bed_media,
                 "landlord_id" : bed.room.property.landlord.id,
                 "property_id" : bed.room.property.id,
                 "bed_number": bed.bed_number,
@@ -631,7 +674,11 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
         await self.accept()
         self.bed_id = None
         self.property_id = None
-
+        user, error = await authenticate_websocket(self.scope)
+        if isinstance(user, AnonymousUser):
+            print(f"[WS Auth] failed: {error}")
+            return await self.close(code=4001)
+        
     async def disconnect(self, close_code):
         if self.property_id and self.bed_id:
             group_name = f"property_{self.property_id}_bed_{self.bed_id}"
@@ -668,11 +715,14 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             if action == "connection_established":
                 result = await self.get_active_tenants(self.room_id,self.bed_id,self.landlord_id,self.property_id,self.includeMatchingTenants)
                 print(f'result {result}')
+                landlord_group = f"landlord_dashboard_{self.landlord_id}"
+                await refresh_counts_for_groups([landlord_group])
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "connection_established",
                     "message": result,
                 }))
+
             elif action == "send_invitation_to_tenant":
                 tenant_id = data.get("tenant_id")
                 bed_id = data.get("bed_id")
@@ -681,7 +731,9 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 room_id = await self.get_room_id_for_bed(bed_id)
                 room_group = f"tenant_{tenant_id}_room_{room_id}"
                 tenant_in_interest_group = f"tenant_{tenant_id}"
-
+                landlord_group = f"landlord_dashboard_{result.get('landlord_id')}"
+                tenant_group = f"tenant_dashboard_{tenant_id}"
+                await refresh_counts_for_groups([landlord_group,tenant_group])
                 for group in (room_group, tenant_in_interest_group):
                     print(f"Sending notification to group {group}")
                     await self.channel_layer.group_send(
@@ -1271,6 +1323,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "interest_status": req.status,
                 "message": req.tenant_message,
                 "tenant_id" : tenant_id,
+                "landlord_id" : bed.room.property.landlord.id,
                 "is_initiated_by_landlord" : True
             }
 

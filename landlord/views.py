@@ -10,6 +10,8 @@ from rest_framework import status
 from localization.models import CityModel, CountryModel
 from tenant.models import TenantDetailsModel
 from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated
 from .models import LandlordBasePreferenceModel, LandlordBedMediaModel, LandlordDetailsModel, LandlordDocumentTypeModel, LandlordEmailVerificationModel, LandlordIdentityVerificationFile, LandlordIdentityVerificationModel, LandlordOptionModel, LandlordPropertyAmenityModel, LandlordPropertyDetailsModel, LandlordPropertyMediaModel, LandlordPropertyRoomDetailsModel, LandlordPropertyRoomTypeModel, LandlordPropertyTypeModel, LandlordQuestionModel, LandlordRoomMediaModel
 from django.contrib.auth.hashers import make_password
 from django.core.mail import send_mail
@@ -21,8 +23,14 @@ from django.contrib.contenttypes.models import ContentType
 from .models import LandlordQuestionModel, LandlordAnswerModel, LandlordRoomWiseBedModel
 from .serializers import AddIdentityDocumentSerializer, LandlordBasePreferenceSerializer, LandlordBedDetailRequestSerializer, LandlordDocumentTypeSerializer, LandlordIdentityDocumentSerializer, LandlordPreferenceAnswerSerializer, LandlordProfileRequestSerializer, LandlordPropertyDetailRequestSerializer, LandlordPropertyDetailSerializer, LandlordQuestionRequestSerializer, LandlordRoomDetailRequestSerializer, LandlordSignupSerializer, PropertyAllPreferencesRequestSerializer, PropertyListRequestSerializer, TenantInterestRequestSerializer, ToggleActiveStatusSerializer, UpdateLandlordProfileSerializer
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.permissions import IsAuthenticated
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def landlord_signup(request):
     """API to handle landlord signup"""
     try:
@@ -139,6 +147,8 @@ def landlord_signup(request):
         )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_preference_questions(request):
     """
     Fetch all landlord questions, but if the client POSTs an `answers` list,
@@ -252,6 +262,8 @@ def get_preference_questions(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 def save_landlord_preferences(request):
     """
@@ -434,6 +446,8 @@ def save_landlord_answers(bd,landlord,answer_instances):
     
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def add_landlord_property_details(request):
     # 1) Validate fields
@@ -1247,6 +1261,8 @@ def update_landlord_room(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_property_types_and_amenities(request):
     """
     API to fetch all active landlord property types and amenities.
@@ -1413,6 +1429,8 @@ def update_landlord_bed(request):
         return Response({"status":"error","message":str(e)}, status=500)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_properties(request):
     """
     API to fetch all properties for a landlord, including nested rooms & beds.
@@ -1500,6 +1518,8 @@ def get_landlord_properties(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_property_details(request):
     """
     API to fetch detailed information about a specific property.
@@ -1705,6 +1725,8 @@ def build_all_tabs(property_id):
 
 
 '''@api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_property_details(request):
     """
     Returns top‑level property info plus a flat list of its rooms (no nested beds).
@@ -1759,6 +1781,8 @@ def get_landlord_property_details(request):
     return Response(ResponseData.success(data, "Property details fetched"), status=200)
 '''
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_room_details(request):
     """
     Returns one room’s full detail plus a flat list of its beds (no nested preferences).
@@ -1881,6 +1905,8 @@ def build_all_preferences(rooms, landlord):
     return all_prefs
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_landlord_bed_details(request):
     serializer = LandlordBedDetailRequestSerializer(data=request.data)
     if not serializer.is_valid():
@@ -1953,6 +1979,8 @@ def get_landlord_bed_details(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_profile_details(request):
     """
     API to fetch landlord profile details.
@@ -2012,6 +2040,8 @@ def get_profile_details(request):
     )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def update_profile_details(request):
     """
     API to update landlord profile details.
@@ -2056,6 +2086,8 @@ def update_profile_details(request):
     )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def add_identity_document(request):
     print(f'request.data {request.data}')
     serializer = AddIdentityDocumentSerializer(data=request.data)
@@ -2086,6 +2118,8 @@ def add_identity_document(request):
     return Response(ResponseData.error(serializer.errors), status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_all_identity_documents(request):
     landlord_id = request.data.get('landlord_id')
     if not landlord_id:
@@ -2116,6 +2150,8 @@ def get_all_identity_documents(request):
     )
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def update_identity_document(request):
     """
     API to update an existing identity document.
@@ -2190,6 +2226,8 @@ def update_identity_document(request):
     return Response(ResponseData.success_without_data("Identity document updated successfully."), status=status.HTTP_200_OK)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def delete_identity_document(request):
     doc_id = request.data.get('id')
     if not doc_id:
@@ -2442,6 +2480,8 @@ def update_uploaded_landlord_media_selection(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def toggle_active_status(request):
     """
     API to update the is_active status of a room or bed.
@@ -2589,6 +2629,8 @@ def save_landlord_base_preferences(request):
 
 
 @api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 def get_all_preferences_of_property(request):
     """

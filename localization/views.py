@@ -1,82 +1,84 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import (
+    api_view, 
+    authentication_classes, 
+    permission_classes
+)
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import SessionAuthentication
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.response import Response
 from rest_framework import status
+from django.core.cache import cache
+
 from .models import CityModel, CountryModel
 from .serializers import CitySerializer, CountrySerializer
 from response import Response as ResponseData
+from user.authentication import EnhancedJWTValidation
+from rest_framework.permissions import IsAuthenticated
 
 @api_view(['POST'])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_cities(request):
     """
-    API to filter cities based on a search string.
-    - If an exact match is found (case-insensitive), return only that city.
-    - Otherwise, return cities containing the search string (limited to 10).
+    API to filter cities by search string.
+    Accepts an optional JWT; request.user will be set if valid.
     """
     try:
         search_text = request.data.get('search', '').strip()
-        print(f'search_text {search_text}')
-        
         if not search_text:
             return Response(
                 ResponseData.error("Search text is required"),
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Try finding an exact match first (case-insensitive)
-        exact_match = CityModel.objects.filter(name__iexact=search_text).first()
-
-        if exact_match:
-            serializer = CitySerializer([exact_match], many=True)
+        exact = CityModel.objects.filter(name__iexact=search_text).first()
+        if exact:
+            qs = [exact]
         else:
-            # Return first 10 cities that contain the search text
-            cities = CityModel.objects.filter(name__icontains=search_text)[:10]
-            serializer = CitySerializer(cities, many=True)
+            qs = CityModel.objects.filter(name__icontains=search_text)[:10]
 
+        serializer = CitySerializer(qs, many=True)
         return Response(
             ResponseData.success(data=serializer.data, message="Cities fetched successfully"),
             status=status.HTTP_200_OK
         )
-
-    except Exception as exception:
+    except Exception as e:
         return Response(
-            ResponseData.error(str(exception)),
+            ResponseData.error(str(e)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 @api_view(['POST'])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def get_countries(request):
     """
-    API to filter cities based on a search string.
-    - If an exact match is found (case-insensitive), return only that city.
-    - Otherwise, return cities containing the search string (limited to 10).
+    API to filter countries by search string.
+    Accepts an optional JWT; request.user will be set if valid.
     """
     try:
         search_text = request.data.get('search', '').strip()
-        print(f'search_text {search_text}')
-        
         if not search_text:
             return Response(
                 ResponseData.error("Search text is required"),
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Try finding an exact match first (case-insensitive)
-        exact_match = CountryModel.objects.filter(name__iexact=search_text).first()
-
-        if exact_match:
-            serializer = CountrySerializer([exact_match], many=True)
+        exact = CountryModel.objects.filter(name__iexact=search_text).first()
+        if exact:
+            qs = [exact]
         else:
-            # Return first 10 cities that contain the search text
-            countries = CountryModel.objects.filter(name__icontains=search_text)[:10]
-            serializer = CountrySerializer(countries, many=True)
+            qs = CountryModel.objects.filter(name__icontains=search_text)[:10]
 
+        serializer = CountrySerializer(qs, many=True)
         return Response(
             ResponseData.success(data=serializer.data, message="Countries fetched successfully"),
             status=status.HTTP_200_OK
         )
-
-    except Exception as exception:
+    except Exception as e:
         return Response(
-            ResponseData.error(str(exception)),
+            ResponseData.error(str(e)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )

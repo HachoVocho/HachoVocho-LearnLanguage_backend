@@ -18,6 +18,8 @@ import appointments.routing
 import chat.routing
 import interest_requests.routing
 import landlord_availability.routing
+import tenant.routing
+import landlord.routing
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
@@ -25,6 +27,7 @@ application = ProtocolTypeRouter({
         URLRouter(
             chat.routing.websocket_urlpatterns + interest_requests.routing.websocket_urlpatterns
             + landlord_availability.routing.websocket_urlpatterns + appointments.routing.websocket_urlpatterns
+            + tenant.routing.websocket_urlpatterns + landlord.routing.websocket_urlpatterns
         )
     ),
 })
