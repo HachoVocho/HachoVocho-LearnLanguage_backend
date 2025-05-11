@@ -68,7 +68,7 @@ class LandlordPropertyAmenityModelAdmin(admin.ModelAdmin):
 
 @admin.register(LandlordPropertyDetailsModel)
 class   Admin(admin.ModelAdmin):
-    list_display = ('id','property_city','property_city_id','property_name', 'property_address', 'property_size','pin_code', 'property_type', 'number_of_rooms', 'is_active')
+    list_display = ('id','street_number','longitude','latitude','property_city','property_city_id','property_name', 'property_address', 'property_size','pin_code', 'property_type', 'number_of_rooms', 'is_active')
     list_filter = ('is_active', 'is_deleted', 'created_at')
     search_fields = ('property_name', 'property_address')
     readonly_fields = ('created_at', 'deleted_at')

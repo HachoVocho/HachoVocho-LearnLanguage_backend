@@ -321,3 +321,8 @@ class LandlordBasePreferenceSerializer(serializers.Serializer):
 class PropertyAllPreferencesRequestSerializer(serializers.Serializer):
     landlord_id = serializers.IntegerField()
     property_id = serializers.IntegerField()
+
+class CheckPropertyExistsSerializer(serializers.Serializer):
+    latitude      = serializers.DecimalField(max_digits=11, decimal_places=8)
+    longitude     = serializers.DecimalField(max_digits=11, decimal_places=8)
+    street_number = serializers.CharField(max_length=20)
