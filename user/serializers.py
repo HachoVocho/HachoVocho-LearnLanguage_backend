@@ -14,6 +14,7 @@ class EmailVerificationSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, allow_blank=True)
+    isLandlord = serializers.BooleanField(required=False, default=False)
 
 class ForgotPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()

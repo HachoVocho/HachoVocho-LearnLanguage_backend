@@ -60,3 +60,7 @@ class TenantPaymentSerializer(serializers.ModelSerializer):
         time_str = dt.strftime('%-I:%M %p')  # e.g. '6:54 PM'
 
         return f"{day_str} {month_str} {year_str}, {time_str}"
+    
+class TenantSubscriptionStatusSerializer(serializers.Serializer):
+    tenant_id = serializers.IntegerField()
+    bed_id = serializers.IntegerField()

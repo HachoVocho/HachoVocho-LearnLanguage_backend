@@ -1,5 +1,6 @@
 from datetime import datetime
 import os
+import re
 from django.forms import ValidationError
 from django.shortcuts import render
 from rest_framework.decorators import api_view
@@ -65,7 +66,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def tenant_signup(request):
     """API to handle tenant signup"""
     try:
@@ -411,7 +412,10 @@ def get_tenant_profile_details(request):
             ResponseData.error("Invalid tenant ID or tenant is not active."),
             status=status.HTTP_400_BAD_REQUEST
         )
-    
+    try:
+        currency_symbol = tenant.preferred_city.state.country.currency_symbol
+    except (AttributeError, TenantDetailsModel.DoesNotExist):
+        currency_symbol = ''
     # Step 3: Build tenant basic profile data
     tenant_data = {
         "id": tenant.id,
@@ -581,6 +585,7 @@ def get_tenant_profile_details(request):
     data = {
         "tenant": tenant_data,
         "personality_details": personality_data,
+        'preferred_country_currency' : currency_symbol,
         "dropdown_options": {
             "occupations": occupations,
             "religions": religions,
@@ -590,7 +595,7 @@ def get_tenant_profile_details(request):
             "socializing_habits": socializing_habits,
             "relationship_statuses": relationship_statuses,
             "food_habits": food_habits,
-            "country" : countries
+            "country" : countries,
         },
         "profile_completion": profile_completion,
         "personality_completion": personality_completion,
@@ -859,6 +864,314 @@ def update_tenant_personality(request):
         status=status.HTTP_200_OK
     )
 
+
+@api_view(["POST"])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def get_properties_by_city_overview(request):
+    """
+    API to fetch property summaries in a city,
+    sorted by tenant preference match (supports multi-select priority questions).
+    """
+    # 1. Validate input
+    serializer = PropertyListRequestSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(ResponseData.error(serializer.errors), status=400)
+    city_id = serializer.validated_data['city_id']
+    tenant_id = serializer.validated_data['tenant_id']
+
+    # 2. Load city
+    try:
+        city_obj = CityModel.objects.select_related('state__country').get(id=city_id)
+    except CityModel.DoesNotExist:
+        return Response(ResponseData.success_without_data("City not found"), status=200)
+
+    # 3. Load tenant & update preferred city
+    try:
+        tenant = TenantDetailsModel.objects.get(id=tenant_id, is_active=True)
+    except TenantDetailsModel.DoesNotExist:
+        return Response(ResponseData.error("Tenant not found"), status=404)
+    tenant.preferred_city = city_obj
+    tenant.save(update_fields=['preferred_city'])
+
+    # 4. Load tenant personality
+    try:
+        tenant_persona = TenantPersonalityDetailsModel.objects.get(
+            tenant=tenant, is_active=True, is_deleted=False
+        )
+    except TenantPersonalityDetailsModel.DoesNotExist:
+        tenant_persona = None
+
+    # 5. Fetch all tenant answers (multi-select supported)
+    raw_answers = TenantPreferenceAnswerModel.objects.filter(
+        tenant=tenant, is_active=True, is_deleted=False
+    ).select_related('question', 'option')
+
+    # Build map: question_text -> list of {value, priority}
+    prefs = {}
+    for ans in raw_answers:
+        text = ans.static_option or ans.option.option_text
+        q_text = ans.question.question_text
+        prefs.setdefault(q_text, []).append({
+            'value': text,
+            'priority': ans.priority or 1
+        })
+
+    # Parsers
+    def parse_numeric(val):
+        m = re.search(r'\d+', val.replace(',', ''))
+        return int(m.group()) if m else None
+
+    def parse_range(val):
+        nums = list(map(int, re.findall(r'\d+', val.replace(',', ''))))
+        if len(nums) == 1:
+            if 'Below' in val or '<' in val:
+                return 0, nums[0]
+            return nums[0], float('inf')
+        if len(nums) >= 2:
+            return nums[0], nums[1]
+        return 0, float('inf')
+
+    # 6. Load properties with prefetches
+    country = city_obj.state.country
+    currency_symbol = country.currency_symbol or ""
+    currency = country.currency or ""
+
+    props_qs = (
+        LandlordPropertyDetailsModel.objects
+        .filter(property_city=city_obj, is_active=True, is_deleted=False)
+        .select_related('property_type', 'property_city')
+        .prefetch_related(
+            Prefetch(
+                'rooms__beds',
+                queryset=LandlordRoomWiseBedModel.objects.filter(
+                    is_active=True, is_deleted=False,
+                    availability_start_date__isnull=False
+                ).prefetch_related('tenant_preference_answers'),
+                to_attr='valid_beds'
+            ),
+            'property_media',
+            'amenities'
+        )
+    )
+
+    results = []
+    last_landlord = None
+    today = now().date()
+
+    for prop in props_qs:
+        last_landlord = prop.landlord_id
+
+        # Gather rents, media, amenities
+        monthly_rents, daily_rents = [], []
+        media = [{"url": m.file.url, "type": m.media_type}
+                 for m in prop.property_media.filter(is_active=True)]
+        amenities = [a.name for a in prop.amenities.filter(is_active=True)]
+
+        # Bed-level personality matching & collect beds data
+        bed_scores, all_start_dates, all_min_durations = [], [], []
+        max_people = None
+        for room in prop.rooms.all():
+            if room.max_people_allowed:
+                max_people = room.max_people_allowed
+            for bed in getattr(room, 'valid_beds', []):
+                amt = float(bed.rent_amount)
+                (monthly_rents if bed.is_rent_monthly else daily_rents).append(amt)
+                all_start_dates.append(bed.availability_start_date)
+                if bed.min_agreement_duration_in_months:
+                    all_min_durations.append(bed.min_agreement_duration_in_months)
+                answers = list(bed.tenant_preference_answers.all())
+                if not answers:
+                    base = LandlordBasePreferenceModel.objects.filter(landlord_id=prop.landlord_id).first()
+                    if base:
+                        answers = list(base.answers.all())
+                match_pct, _ = compute_personality_match(tenant_persona, answers)
+                bed_scores.append(match_pct)
+
+        if not bed_scores:
+            continue
+        overall_pct = round(sum(bed_scores) / len(bed_scores), 2)
+
+        # Min price formatting
+        min_price = None
+        if monthly_rents:
+            min_price = f"{min(monthly_rents):.2f} {currency_symbol} / month"
+        if daily_rents:
+            d = f"{min(daily_rents):.2f} {currency_symbol} / day"
+            min_price = f"{min_price}, {d}" if min_price else d
+
+        # 7. Compute weighted sort score for all questions
+        score = 0.0
+
+        # Helper to iterate multi-select entries
+        def weighted_block(q_key, func):
+            nonlocal score
+            for entry in prefs.get(q_key, []):
+                val = entry['value']
+                prio = entry['priority']
+                sub = func(val)
+                score += sub * prio
+
+        # Availability Start Date
+        def avail_func(val):
+            if not all_start_dates: return 0
+            if "As Soon as Possible" in val: tgt=0
+            elif "1 Month" in val: tgt=30
+            elif "3 Months" in val: tgt=90
+            else: tgt=float('inf')
+            actual = min((d - today).days for d in all_start_dates)
+            diff = abs(actual - tgt)
+            return max(0, 1 - diff / tgt) if tgt and tgt!=float('inf') else 0
+        weighted_block("Availability Start Date", avail_func)
+
+        # Lease Duration Preference
+        mapping = {"Short-term":6, "Medium-term":12, "Long-term":36, "Very Long-term":60}
+        def lease_func(val):
+            if not all_min_durations: return 0
+            tgt = next((v for k,v in mapping.items() if k in val), None)
+            if not tgt: return 0
+            diff=abs(min(all_min_durations)-tgt)
+            return max(0, 1 - diff/tgt)
+        weighted_block("Lease Duration Preference", lease_func)
+
+        # Pet Ownership Preference
+        def pet_func(val):
+            allows = "Pet-Friendly" in amenities
+            if "No Pets" in val: return 0 if allows else 1
+            return 1 if allows else 0
+        weighted_block("Pet Ownership Preference", pet_func)
+
+        # Alcohol Consumption Preference
+        def alc_func(val):
+            allows = "Alcohol Allowed" in amenities
+            if "No Preference" in val: return 1
+            return 1 if "Allowed" in val and allows else 0
+        weighted_block("Alcohol Consumption Preference", alc_func)
+
+        # Smoking Preference
+        def smoke_func(val):
+            allows = "Smoking Allowed" in amenities
+            if "No Preference" in val: return 1
+            return 1 if "Allowed" in val and allows else 0
+        weighted_block("Smoking Preference", smoke_func)
+
+        # Maximum Number of People Allowed
+        def people_func(val):
+            if max_people is None: return 0
+            tgt=parse_numeric(val)
+            diff=abs(tgt-max_people)
+            return max(0, 1 - diff/max(tgt,max_people,1))
+        weighted_block("Maximum Number of People Allowed", people_func)
+
+        # Number of Beds Required
+        def beds_func(val):
+            want=parse_numeric(val); have=prop.number_of_rooms
+            diff=abs(want-have)
+            return max(0, 1 - diff/max(want,have,1))
+        weighted_block("Number of Beds Required", beds_func)
+
+        # Budget for Rent per Month
+        def bud_func(val):
+            if not monthly_rents: return 0
+            low,high=parse_range(val)
+            prop_min=min(monthly_rents)
+            dist=max(0, low-prop_min, prop_min-high)
+            span=high-low or high or 1
+            return max(0, (span-dist)/span)
+        weighted_block("Budget for Rent per Month", bud_func)
+
+        # Preferred Amenities
+        def am_func(val):
+            want={x.strip() for x in val.split(',')}
+            inter=len(want & set(amenities))
+            union=len(want | set(amenities)) or 1
+            return inter/union
+        weighted_block("Preferred Amenities", am_func)
+
+        # Preferred Room Location in Property
+        def loc_func(val):
+            return 1 if any(room.location_in_property.lower() in val.lower() for room in prop.rooms.all()) else 0
+        weighted_block("Preferred Room Location in Property", loc_func)
+
+        # Preferred Floor Level
+        def floor_func(val):
+            if prop.floor is None: return 0
+            want=parse_numeric(val); diff=abs(want-prop.floor)
+            return max(0, 1 - diff/max(want,prop.floor,1))
+        weighted_block("Preferred Floor Level", floor_func)
+
+        # Preferred Property Size
+        def size_func(val):
+            if not prop.property_size: return 0
+            low,high=parse_range(val)
+            act=parse_numeric(prop.property_size)
+            if act is None: return 0
+            dist=max(0, low-act, act-high)
+            span=high-low or high or 1
+            return max(0, (span-dist)/span)
+        weighted_block("Preferred Property Size", size_func)
+
+        # Number of Bathrooms
+        def bath_func(val):
+            want=parse_numeric(val)
+            bath=parse_numeric(next((a for a in amenities if "Bathroom" in a), ""))
+            if bath is None: return 0
+            diff=abs(want-bath)
+            return max(0, 1 - diff/max(want,bath,1))
+        weighted_block("Number of Bathrooms", bath_func)
+
+        # Number of Bedrooms
+        def bedr_func(val):
+            want=parse_numeric(val); have=prop.number_of_rooms
+            diff=abs(want-have)
+            return max(0, 1 - diff/max(want,have,1))
+        weighted_block("Number of Bedrooms", bedr_func)
+
+        # Preferred Property Type
+        def type_func(val):
+            return 1 if prop.property_type and val == prop.property_type.type_name else 0
+        weighted_block("Preferred Property Type", type_func)
+
+        # Distance
+        dist_center = haversine_distance(
+            float(prop.latitude or 0), float(prop.longitude or 0),
+            float(city_obj.latitude), float(city_obj.longitude)
+        )
+
+        results.append({
+            "id": prop.id,
+            "property_name": prop.property_name,
+            "distance_from_city_center": dist_center,
+            "property_size": prop.property_size,
+            "property_type": prop.property_type.type_name if prop.property_type else None,
+            "property_city": prop.property_city.name if prop.property_city else None,
+            "number_of_rooms": prop.number_of_rooms,
+            "floor": prop.floor,
+            "property_description": prop.property_description,
+            "amenities": amenities,
+            "media": media,
+            "currency_symbol": currency_symbol,
+            "currency": currency,
+            "min_price": min_price,
+            "overall_personality_match_percentage": overall_pct,
+            "sort_score": score,
+        })
+
+    # 8. Sort and remove sort_score
+    results.sort(key=lambda x: (x['sort_score'], x['overall_personality_match_percentage']), reverse=True)
+    for r in results:
+        r.pop('sort_score', None)
+
+    return Response(
+        ResponseData.success({
+            "preferred_city_name": city_obj.name,
+            "landlord_id": last_landlord,
+            "properties": results
+        }, "Properties fetched successfully"),
+        status=200
+    )
+
+'''
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
 @permission_classes([IsAuthenticated])
@@ -874,18 +1187,26 @@ def get_properties_by_city_overview(request):
     serializer = PropertyListRequestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
-            ResponseData.error("Validation error", serializer.errors),
+            ResponseData.error(serializer.errors),
             status=400
         )
 
     city_id = serializer.validated_data['city_id']
     tenant_id = serializer.validated_data['tenant_id']
-
     # Load tenant & update preferred city
     try:
+        cityData = CityModel.objects.get(id=city_id)
+    except CityModel.DoesNotExist:
+        return Response(
+            ResponseData.success_without_data("City not found"),
+            status=status.HTTP_200_OK
+        )
+    try:
         tenant = TenantDetailsModel.objects.get(id=tenant_id, is_active=True)
-        tenant.preferred_city_id = city_id
-        tenant.save()
+        tenant.preferred_city_id = city_id    # set the *_id field directly
+        tenant.save(update_fields=['preferred_city'])
+        print('svdsvsdvdssvdv')
+        print(tenant.preferred_city)
     except TenantDetailsModel.DoesNotExist:
         return Response(
             ResponseData.error("Tenant not found"),
@@ -989,50 +1310,6 @@ def get_properties_by_city_overview(request):
                     else:
                         print("No base preferences found either")
 
-                # Compute match score
-                """score = 0
-                if tenant_persona and lan:
-                    print(f"\nCalculating match score for bed {bed.id}")
-                    print(f"Tenant persona exists, {len(lan)} landlord answers available")
-                    
-                    for field_idx, field in enumerate(personality_fields, start=1):
-                        choice = getattr(tenant_persona, f"{field}_id", None)
-                        print(f"\nField {field_idx}/{len(personality_fields)}: {field}")
-                        print(f"Tenant's choice ID: {choice}")
-                        
-                        if not choice:
-                            print("No tenant choice for this field, skipping")
-                            continue
-                        
-                        try:
-                            model_field = TenantPersonalityDetailsModel._meta.get_field(field).remote_field.model
-                            ctype = ContentType.objects.get_for_model(model_field)
-                            rel = [la for la in lan if la.question.content_type_id == ctype.id]
-                            print(f"Found {len(rel)} relevant answers for this field")
-                            
-                            if not rel:
-                                print("No matching answers for this field, skipping")
-                                continue
-                            
-                            sorted_l = sorted(rel, key=lambda la: la.preference or 0)
-                            i = next((i for i, la in enumerate(sorted_l) if la.object_id == choice), None)
-                            
-                            if i is not None:
-                                opts = len(sorted_l)
-                                field_score = ((opts - i) / opts) * max_marks
-                                score += field_score
-                                print(f"Match found at position {i} of {opts}")
-                                print(f"Field score: {field_score:.2f} (Total: {score:.2f})")
-                            else:
-                                print("No matching answer found for tenant's choice")
-                        except Exception as e:
-                            print(f"Error processing field {field}: {str(e)}")
-                            continue
-                else:
-                    print("Skipping score calculation - missing tenant persona or landlord answers")
-                
-                pct = round((score / total_possible) * 100, 2) if total_possible else 0.0
-                print(f"\nFinal match percentage for bed {bed.id}: {pct}%")"""
                 overall_match, breakdown = compute_personality_match(tenant_persona, lan)
                 print("Overall match:", overall_match)
                 for field, pct in breakdown.items():
@@ -1089,6 +1366,7 @@ def get_properties_by_city_overview(request):
         }, "Properties fetched successfully"),
         status=200
     )
+'''
 
 
 
@@ -1201,23 +1479,6 @@ def get_property_details(request):
                 if base:
                     lan = list(base.answers.all())
 
-            """score = 0
-            if tenant_persona and lan:
-                for f in pfields:
-                    choice = getattr(tenant_persona, f"{f}_id", None)
-                    if not choice:
-                        continue
-                    mf = TenantPersonalityDetailsModel._meta.get_field(f).remote_field.model
-                    ct = ContentType.objects.get_for_model(mf)
-                    rel = [la for la in lan if la.question.content_type_id == ct.id]
-                    if not rel:
-                        continue
-                    sorted_l = sorted(rel, key=lambda la: la.preference or 0)
-                    idx = next((i for i, la in enumerate(sorted_l) if la.object_id == choice), None)
-                    if idx is not None:
-                        opts = len(sorted_l)
-                        score += ((opts - idx) / opts) * max_marks
-            match_pct = round((score / tot) * 100, 2) if tot else 0.0"""
             overall_match, breakdown = compute_personality_match(tenant_persona, lan)
             print("Overall match:", overall_match)
             for field, pct in breakdown.items():
@@ -1246,6 +1507,8 @@ def get_property_details(request):
             "room_size": room.room_size,
             "number_of_beds": room.number_of_beds or 1,
             "max_people_allowed": room.max_people_allowed or 1,
+            "current_male_occupants": room.current_male_occupants or 0,
+            "current_female_occupants": room.current_female_occupants or 0,
             "floor": room.floor or 0,
             "location_in_property": room.location_in_property,
             "room_media": room_media,

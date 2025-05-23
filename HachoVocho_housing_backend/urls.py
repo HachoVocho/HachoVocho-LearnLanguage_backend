@@ -14,6 +14,9 @@ urlpatterns = [
     path('appointments/', include('appointments.urls')),
     path('translations/', include('translations.urls')),
     path('interest_requests/', include('interest_requests.urls')),
+    path('support/', include('support.urls')),
+    path('notifications/', include('notifications.urls')),
+    path('', include('core.urls')),
 ]
 
 # Serve static and media files in development

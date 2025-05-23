@@ -13,7 +13,12 @@ class LandlordSignupSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(max_length=50)
     last_name = serializers.CharField(max_length=50)
     email = serializers.EmailField()
-    password = serializers.CharField(max_length=128, write_only=True)
+    password = serializers.CharField(
+        max_length=128,
+        write_only=True,
+        style={'input_type': 'password'},
+        allow_blank=True
+    )
     class Meta:
         model = LandlordDetailsModel
         fields = ['first_name', 'last_name', 'email', 'password']

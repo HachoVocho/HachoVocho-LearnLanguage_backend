@@ -26,7 +26,12 @@ class CountryModel(models.Model):
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
-
+    amount = models.DecimalField(
+        max_digits=12,     # total digits (incl. decimals)
+        decimal_places=2,  # digits after the decimal point
+        blank=True,
+        null=True,
+    )
     def __str__(self):
         return self.name
 

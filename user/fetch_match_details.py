@@ -27,24 +27,24 @@ def compute_personality_match(
     total_score = 0.0
     raw = {}
 
-    print(f"[DEBUG] Fields: {personality_fields}")
-    print(f"[DEBUG] Max marks per question: {max_marks}")
+    #print(f"[DEBUG] Fields: {personality_fields}")
+    #print(f"[DEBUG] Max marks per question: {max_marks}")
 
     for field in personality_fields:
-        print(f"\n[DEBUG] Processing field: {field}")
+        #print(f"\n[DEBUG] Processing field: {field}")
         entry = {"tenant_choice": None, "landlord_ranked": [], "match_pct": 0.0}
 
         # 1) tenant’s choice
         ans_id = getattr(tenant_persona, f"{field}_id", None)
-        print(f"[DEBUG]   Tenant answer ID: {ans_id}")
+       # print(f"[DEBUG]   Tenant answer ID: {ans_id}")
 
         # 2) resolve the related model for this field
         try:
             field_obj = tenant_persona._meta.get_field(field)
             rel_model = field_obj.remote_field.model
-            print(f"[DEBUG]   Related model for '{field}': {rel_model.__name__}")
+            #print(f"[DEBUG]   Related model for '{field}': {rel_model.__name__}")
         except Exception as e:
-            print(f"[ERROR]   Could not resolve remote_field for '{field}': {e}")
+            #print(f"[ERROR]   Could not resolve remote_field for '{field}': {e}")
             raw[field] = entry
             continue
 
@@ -53,16 +53,16 @@ def compute_personality_match(
             try:
                 opt = rel_model.objects.get(pk=ans_id)
                 label = getattr(opt, "name", str(opt))
-                print(f"[DEBUG]   Tenant choice label: {label}")
+                #print(f"[DEBUG]   Tenant choice label: {label}")
             except Exception as e:
                 label = ""
-                print(f"[ERROR]   Could not fetch tenant option for ID {ans_id}: {e}")
+                #print(f"[ERROR]   Could not fetch tenant option for ID {ans_id}: {e}")
             entry["tenant_choice"] = {"id": ans_id, "label": label}
 
         # 4) collect and sort landlord’s preferences
         ct = ContentType.objects.get_for_model(rel_model)
         las = [la for la in landlord_answers_qs if la.question.content_type_id == ct.id]
-        print(f"[DEBUG]   Found {len(las)} landlord answers for '{field}'")
+        #print(f"[DEBUG]   Found {len(las)} landlord answers for '{field}'")
         las_sorted = sorted(las, key=lambda la: la.preference or 0)
         for la in las_sorted:
             oid = la.object_id
@@ -71,9 +71,9 @@ def compute_personality_match(
                 lbl = getattr(opt, "name", str(opt))
             except Exception as e:
                 lbl = ""
-                print(f"[ERROR]    Could not fetch landlord option for ID {oid}: {e}")
+                #print(f"[ERROR]    Could not fetch landlord option for ID {oid}: {e}")
             entry["landlord_ranked"].append({"id": oid, "label": lbl})
-        print(f"[DEBUG]   Ranked landlord options: {entry['landlord_ranked']}")
+        #print(f"[DEBUG]   Ranked landlord options: {entry['landlord_ranked']}")
 
         # 5) compute match_pct for this field
         if ans_id and entry["landlord_ranked"]:
@@ -84,19 +84,19 @@ def compute_personality_match(
                 pct = round((raw_score / max_marks) * 100, 2)
                 entry["match_pct"] = pct
                 total_score += raw_score
-                print(f"[DEBUG]   Raw score: {raw_score}, Match %: {pct}")
+                #print(f"[DEBUG]   Raw score: {raw_score}, Match %: {pct}")
             else:
                 print(f"[WARN]   Tenant answer ID {ans_id} not found in landlord_ranked list")
 
         raw[field] = entry
 
     overall_pct = round((total_score / total_possible) * 100, 2) if total_possible else 0.0
-    print(f"\n[DEBUG] Total raw score: {total_score}, Overall %: {overall_pct}")
+    #print(f"\n[DEBUG] Total raw score: {total_score}, Overall %: {overall_pct}")
 
     # 6) sort by match_pct descending
     sorted_items = sorted(raw.items(), key=lambda kv: kv[1]["match_pct"], reverse=True)
     details_dict = {field: info for field, info in sorted_items}
-    print(f"[DEBUG] Sorted details order: {details_dict}")
+    #print(f"[DEBUG] Sorted details order: {details_dict}")
 
     return overall_pct, details_dict
 

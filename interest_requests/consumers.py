@@ -1,26 +1,52 @@
+import aioredis
 from django.utils import timezone
 from datetime import timedelta
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 import json
 from django.contrib.contenttypes.models import ContentType
+from HachoVocho_housing_backend import settings
 from appointments.consumers import AppointmentRepository
 from appointments.models import AppointmentBookingModel
 from landlord.models import LandlordBasePreferenceModel, LandlordBedMediaModel, LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomMediaModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
 from localization.models import CityModel, CountryModel
+from notifications.send_notifications import send_onesignal_notification
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from user.fetch_match_details import compute_personality_match
 from user.refresh_count_for_groups import refresh_counts_for_groups
 from user.ws_auth import authenticate_websocket
 from .models import LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.views import build_all_tabs
-from django.db.models import Q
+from django.db.models import Q, F
 from django.contrib.auth.models import AnonymousUser
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 from typing import Iterable
+from asgiref.sync import sync_to_async
     
+REDIS_URL = settings.REDIS_URL  # e.g. "redis://localhost:6379/0"
+
+get_tenant_details = sync_to_async(TenantDetailsModel.objects.get, thread_sensitive=True)
+get_landlord_details = sync_to_async(LandlordDetailsModel.objects.get, thread_sensitive=True)
+get_bed_details = sync_to_async(LandlordRoomWiseBedModel.objects.get, thread_sensitive=True)
+
+async def add_channel_to_group_redis(group: str, channel: str) -> None:
+    redis = await aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    await redis.sadd(f"group:{group}", channel)
+    await redis.close()
+
+
+async def remove_channel_from_group_redis(group: str, channel: str) -> None:
+    redis = await aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    await redis.srem(f"group:{group}", channel)
+    await redis.close()
+
+
+async def is_group_empty(group: str) -> bool:
+    redis = await aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    members = await redis.scard(f"group:{group}")
+    await redis.close()
+    return members == 0
+
 class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
@@ -32,10 +58,24 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
             return await self.close(code=4001)
 
     async def disconnect(self, close_code):
-        if self.tenant_id and self.room_id:
-            group_name = f"tenant_{self.tenant_id}_room_{self.room_id}"
-            await self.channel_layer.group_discard(group_name, self.channel_name)
+        try:
+            groups: list[str] = []
+            if self.tenant_id:
+                if self.room_id:
+                    groups.append(f"tenant_{self.tenant_id}_room_{self.room_id}")
+                groups.append(f"tenant_{self.tenant_id}")
 
+            for g in groups:
+                await remove_channel_from_group_redis(g, self.channel_name)
+                await self.channel_layer.group_discard(g, self.channel_name)
+
+        except Exception as e:
+            print(f"Disconnection error: {str(e)}")
+        finally:
+            # Clean up
+            self.tenant_id = None
+            self.room_id = None
+            
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
@@ -53,10 +93,12 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 group_name = f"tenant_{self.tenant_id}_room_{self.room_id}"
                 print(f'Joining group: {group_name}')
                 await self.channel_layer.group_add(group_name, self.channel_name)
+                await add_channel_to_group_redis(group_name, self.channel_name)
             if self.tenant_id and self.room_id == -1:
                 group_name = f"tenant_{self.tenant_id}"
                 print(f'Joining group: {group_name}')
                 await self.channel_layer.group_add(group_name, self.channel_name)
+                await add_channel_to_group_redis(group_name, self.channel_name)
             if action == "connection_established":
                 # Assuming you have self.bed_id and self.tenant_id already set.
                 result = await self.get_bed_statuses_for_tenant(self.room_id, self.tenant_id)
@@ -81,6 +123,9 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 landlord_group = f"landlord_dashboard_{landlord_id}"
                 tenant_group = f"tenant_dashboard_{tenant_id}"
                 await refresh_counts_for_groups([landlord_group,tenant_group])
+                tenant = await get_tenant_details(id=tenant_id, is_active=True, is_deleted=False)
+                bed = await get_bed_details(id=bed_id, is_active=True, is_deleted=False)
+            
                 for group in (bed_group, prop_group):
                     print(f"Sending notification to group {group}")
                     await self.channel_layer.group_send(
@@ -90,6 +135,14 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                             "message": result
                         }
                     )
+                    
+                    if await is_group_empty(group):
+                        await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
+                        landlord_ids=[landlord_id],
+                        headings={"en": "Tenant Interest Request"},
+                        contents={"en": f"Tenant {tenant.first_name} {tenant.last_name} sent you interest request for your {bed.bed_number}"},
+                        data={"request": result, "type": "landlord_request_from_tenant"},
+                        )
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "interest_request_sent_to_landlord",
@@ -103,6 +156,9 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 property_id = await self.get_property_id(bed_id)
                 landlord_group = f"property_{property_id}_bed_{bed_id}"
                 print(f'landlord_group {landlord_group}')
+                tenant = await get_tenant_details(id=tenant_id, is_active=True, is_deleted=False)
+                bed = await get_bed_details(id=bed_id, is_active=True, is_deleted=False)
+            
                 await self.channel_layer.group_send(
                     landlord_group,
                     {
@@ -110,6 +166,13 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                         "message": result
                     }
                 )
+                if await is_group_empty(landlord_group):
+                    await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
+                    landlord_ids=[result['landlord_id']],
+                    headings={"en": "Interest Request Cancelled by tenant"},
+                    contents={"en": f"Tenant {tenant.first_name} {tenant.last_name} cancelled interest request for your {bed.bed_number}"},
+                    data={"request": result, "type": "landlord_request_from_tenant"},
+                    )
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "cancelled_interest_request_sent_to_landlord",
@@ -140,7 +203,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 tenant_id = data.get("tenant_id")
                 bed_id = data.get("bed_id")
                 message = data.get("message", "")
-                result = await self.landlord_interest_request(tenant_id, bed_id, action.split("_")[0], message)
+                result = await self.landlord_interest_request(tenant_id, bed_id, action.split('_')[0], message)
                 if "error" in result:
                     await self.send(text_data=json.dumps({
                         "status": "error",
@@ -148,6 +211,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                     }))
                 else:
                     property_id = await self.get_property_id(bed_id)
+                    landlord_id = await self.get_landlord_id(bed_id)
                     bed_group = f"property_{property_id}_bed_{bed_id}"
                     prop_group = f"property_{property_id}"
 
@@ -160,6 +224,16 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                                 "message": result
                             }
                         )
+                        tenant = await get_tenant_details(id=tenant_id, is_active=True, is_deleted=False)
+                        bed = await get_bed_details(id=bed_id, is_active=True, is_deleted=False)
+                    
+                        if await is_group_empty(group):
+                            await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
+                            landlord_ids=[landlord_id],
+                            headings={"en": f"Tenant {action.split('_')[0]}ed your request"},
+                            contents={"en": f"Tenant {tenant.first_name} {tenant.last_name} {action.split('_')[0]}ed your interest request for your {bed.bed_number}"},
+                            data={"request": result, "type": "landlord_request_from_tenant"},
+                            )
                     await self.send(text_data=json.dumps({
                         "status": "success",
                         "action": "tenant_respond_landlord_request",
@@ -245,6 +319,11 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
         return bed.room.property.id
      
     @database_sync_to_async
+    def get_landlord_id(self,bed_id):
+        bed = LandlordRoomWiseBedModel.objects.get(id=bed_id)
+        return bed.room.property.landlord.id
+    
+    @database_sync_to_async
     def cancel_invitation_sent_to_landlord(self, tenant_id, bed_id):
         try:
             req = TenantInterestRequestModel.objects.get(
@@ -261,6 +340,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 "interest_status": '',
                 "message": '',
                 "tenant_id" : tenant_id,
+                'landlord_id' : req.bed.room.property.landlord.id,
                 "is_initiated_by_landlord" : False
             }
         except TenantInterestRequestModel.DoesNotExist:
@@ -381,44 +461,6 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 if base_pref:
                     landlord_answers_qs = list(base_pref.answers.all())
 
-            # Calculate personality match percentage if tenant has persona
-            """match_pct = 0.0
-            if tenant_persona and landlord_answers_qs:
-                total_score = 0
-                for field in personality_fields:
-                    ans_id = getattr(tenant_persona, f"{field}_id", None)
-                    if not ans_id:
-                        continue
-
-                    # landlord's answers for this question
-                    try:
-                        model_field = TenantPersonalityDetailsModel\
-                                        ._meta.get_field(field)\
-                                        .remote_field.model
-                        ctype = ContentType.objects.get_for_model(model_field)
-                        lan_for_field = [
-                            la for la in landlord_answers_qs
-                            if la.question.content_type == ctype
-                        ]
-                    except Exception:
-                        lan_for_field = []
-
-                    if not lan_for_field:
-                        continue
-
-                    sorted_las = sorted(lan_for_field,
-                                    key=lambda la: la.preference or 0)
-                    idx = next((i for i, la in enumerate(sorted_las)
-                            if la.object_id == ans_id), None)
-                    if idx is None:
-                        continue
-
-                    opts = len(sorted_las)
-                    total_score += ((opts - idx) / opts) * max_marks
-
-                match_pct = round((total_score / total_possible) * 100, 2) \
-                        if total_possible else 0.0
-                print(f"   → Personality match percentage: {match_pct}%")"""
             overall, breakdown = compute_personality_match(tenant_persona, landlord_answers_qs)
             print("Overall match:", overall)
             for field, pct in breakdown.items():
@@ -516,7 +558,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 "bed_media" : bed_media,
                 "landlord_id" : bed.room.property.landlord.id,
                 "property_id" : bed.room.property.id,
-                "bed_number": bed.bed_number,
+                "bed_number": f'{bed.room.room_name} Bed {bed.bed_number}',
                 "room_name" : bed.room.room_name,
                 "is_active": bed.is_active,
                 "tenant_preference": bed.tenant_preference,
@@ -674,6 +716,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
         await self.accept()
         self.bed_id = None
         self.property_id = None
+        self.includeMatchingTenants = False
         user, error = await authenticate_websocket(self.scope)
         if isinstance(user, AnonymousUser):
             print(f"[WS Auth] failed: {error}")
@@ -683,7 +726,8 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
         if self.property_id and self.bed_id:
             group_name = f"property_{self.property_id}_bed_{self.bed_id}"
             await self.channel_layer.group_discard(group_name, self.channel_name)
-
+            await remove_channel_from_group_redis(group_name, self.channel_name)
+            
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
@@ -708,10 +752,12 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 group_name = f"property_{self.property_id}_bed_{self.bed_id}"
                 print(f'Joining group: {group_name}')
                 await self.channel_layer.group_add(group_name, self.channel_name)
+                await add_channel_to_group_redis(group_name, self.channel_name)
             if self.bed_id == -1 and self.property_id and self.landlord_id:
                 group_name = f"property_{self.property_id}"
                 print(f'Joining group: {group_name}')
                 await self.channel_layer.group_add(group_name, self.channel_name)
+                await add_channel_to_group_redis(group_name, self.channel_name)
             if action == "connection_established":
                 result = await self.get_active_tenants(self.room_id,self.bed_id,self.landlord_id,self.property_id,self.includeMatchingTenants)
                 print(f'result {result}')
@@ -733,6 +779,9 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 tenant_in_interest_group = f"tenant_{tenant_id}"
                 landlord_group = f"landlord_dashboard_{result.get('landlord_id')}"
                 tenant_group = f"tenant_dashboard_{tenant_id}"
+                landlord = await get_landlord_details(id=result.get('landlord_id'), is_active=True, is_deleted=False)
+                bed = await get_bed_details(id=bed_id, is_active=True, is_deleted=False)
+            
                 await refresh_counts_for_groups([landlord_group,tenant_group])
                 for group in (room_group, tenant_in_interest_group):
                     print(f"Sending notification to group {group}")
@@ -743,6 +792,13 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                             "message": result
                         }
                     )
+                    if await is_group_empty(group):
+                        await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
+                        tenant_ids=[tenant_id],
+                        headings={"en": "Interest Request from landlord"},
+                        contents={"en": f"Landlord {landlord.first_name} {landlord.last_name} sent you interest request for the bed {bed.bed_number} "},
+                        data={"result": result, "type": "tenant_request_from_landlord"},
+                        )
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "invitation_sent_to_tenant",
@@ -755,8 +811,10 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 print(f'result123 {result}')
                 room_id = await self.get_room_id_for_bed(bed_id)
                 print(f'room_id {room_id}')
-                tenant_group = f"tenant_{tenant_id}_room_{room_id}"
+                tenant_group = f"tenant_{tenant_id}"
                 print(f'tenant_group {tenant_group}')
+                landlord = await get_landlord_details(id=result.get('landlord_id'), is_active=True, is_deleted=False)
+                bed = await get_bed_details(id=bed_id, is_active=True, is_deleted=False)
                 await self.channel_layer.group_send(
                     tenant_group,
                     {
@@ -764,6 +822,13 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                         "message": result
                     }
                 )
+                if await is_group_empty(tenant_group):
+                    await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
+                    tenant_ids=[tenant_id],
+                    headings={"en": "Landlord Cancelled interest request"},
+                    contents={"en": f"Landlord {landlord.first_name} {landlord.last_name} cancelled interest request for the bed {bed.bed_number} "},
+                    data={"result": result, "type": "tenant_request_from_landlord"},
+                    )
                 await self.send(text_data=json.dumps({
                     "status": "success",
                     "action": "landlord_cancelled_invitation_sent_to_tenant",
@@ -816,7 +881,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 tenant_id = data.get("tenant_id")
                 bed_id = data.get("bed_id")
                 message = data.get("message", "")
-                result = await self.tenant_interest_request(tenant_id, bed_id, action.split("_")[0], message)
+                result = await self.tenant_interest_request(tenant_id, bed_id, action.split('_')[0], message)
                 print(f'resultdd {result}')
                 if "error" in result:
                     await self.send(text_data=json.dumps({
@@ -828,6 +893,8 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                     # Use the bed-specific group name
                     tenant_room_group = f"tenant_{tenant_id}_room_{room_id}"
                     tenant_group = f"tenant_{tenant_id}"
+                    landlord = await get_landlord_details(id=result.get('landlord_id'), is_active=True, is_deleted=False)
+                    bed = await get_bed_details(id=bed_id, is_active=True, is_deleted=False)
                     for group in (tenant_room_group, tenant_group):
                         print(f"Sending notification to group {group}")
                         await self.channel_layer.group_send(
@@ -837,6 +904,13 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                                 "message": result
                             }
                         )
+                        if await is_group_empty(group):
+                            await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
+                            tenant_ids=[tenant_id],
+                            headings={"en": f"Landlord {action.split('_')[0]} your request"},
+                            contents={"en": f"Landlord {landlord.first_name} {landlord.last_name} {action.split('_')[0]} your request for the bed {bed.bed_number} "},
+                            data={"result": result, "type": "tenant_request_from_landlord"},
+                            )
 
                 await self.send(text_data=json.dumps({
                     "status": "success",
@@ -1086,16 +1160,6 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
         print(property_id)
         print(includeMatchingTenants)
         print(tenant_id)
-        """
-        includeMatchingTenants=False:
-        Return all interest requests (tenant‐ and landlord‐initiated)
-        for bed/room/property, with personality match, skipping booked.
-        includeMatchingTenants=True:
-        Return only tenants who have NO existing interest request
-        on the SPECIFIC bed_id (must be != -1), with personality match.
-        tenant_id >= 0:
-        Short‐circuit to only that tenant’s records at the DB level.
-        """
         result = []
 
         # 1) Determine bed list & filter
@@ -1124,11 +1188,22 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
         tenant_filter = Q()
         if tenant_id != -1:
             tenant_filter = Q(tenant_id=tenant_id)
+        city_match = Q(tenant__preferred_city=F('bed__room__property__property_city_id'))
 
         # 3) Load all real interest requests on those beds, and only for the tenant if specified
-        tenant_requests = list(TenantInterestRequestModel.objects.filter(
-            bed_filter, is_deleted=False
-        ).filter(tenant_filter))
+        try:
+            tenant_qs = (TenantInterestRequestModel.objects
+                            .filter(bed_filter, is_deleted=False)
+                            .filter(tenant_filter)
+                            .filter(city_match))
+            tenant_requests = list(tenant_qs)
+            print(f'tenant_requests: {tenant_requests}')
+        except Exception as e:
+            # Log the full traceback for debugging
+            print("Failed to fetch tenant_requests with city_match")
+            # Fallback so the rest of your code can still run
+            tenant_requests = []
+            print("Error fetching tenant_requests:", e)
 
         landlord_requests = list(LandlordInterestRequestModel.objects.filter(
             bed_filter, is_deleted=False
@@ -1145,23 +1220,38 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             if base_pref:
                 landlord_answers_qs = list(base_pref.answers.all())
 
-        # 5) Build the `combined` list
+        existing_ids = {
+            tr.tenant_id for tr in tenant_requests
+        } | {
+            lr.tenant_id for lr in landlord_requests
+        }
+        try:
+            # assuming you already have a `property` instance in scope:
+            target_city_id = bed.room.property.property_city.id
+
+            personas = (
+                TenantPersonalityDetailsModel.objects
+                    .filter(is_active=True, is_deleted=False)
+                    # only tenants whose preferred_city FK equals the property’s city
+                    .filter(tenant__preferred_city_id=target_city_id)
+                    .select_related("tenant")
+            )
+
+            print(f"Found {personas.count()} matching personas")
+        except Exception as e:
+            print("Error fetching personality records by city")
+            # fall back to an empty queryset
+            personas = TenantPersonalityDetailsModel.objects.none()
+            print("Error fetching personas:", e)
+        print(f'personasdd {personas}')
         if includeMatchingTenants:
-            if bed_id == -1:
-                raise ValueError("includeMatchingTenants=True requires a specific bed_id")
-
-            existing_ids = {
-                tr.tenant_id for tr in tenant_requests
-            } | {
-                lr.tenant_id for lr in landlord_requests
-            }
-
-            personas = TenantPersonalityDetailsModel.objects.filter(
-                is_active=True, is_deleted=False
-            ).select_related("tenant")
-
-            # still filter by tenant_id if given
-            combined = [
+            # 1) first include all existing requests
+            combined = (
+                [("tenant_req", tr) for tr in tenant_requests] +
+                [("landlord_req", lr) for lr in landlord_requests]
+            )
+            # 2) then append the “new” matching tenants
+            combined += [
                 ("matching", ten_persona)
                 for ten_persona in personas
                 if ten_persona.tenant.id not in existing_ids
@@ -1172,7 +1262,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 [("tenant_req", tr) for tr in tenant_requests] +
                 [("landlord_req", lr) for lr in landlord_requests]
             )
-
+        print(f'combined {combined}')
         # 6) As a safety, also drop any that slipped through that don’t match tenant_id
         if tenant_id != -1:
             combined = [
@@ -1212,7 +1302,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                         landlord_id=landlord_id,
                         is_deleted=False
                     )
-                    if appt_q.exists():
+                    if appt_q.exists() and not includeMatchingTenants:
                         continue
 
                 try:
@@ -1222,39 +1312,6 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 except TenantPersonalityDetailsModel.DoesNotExist:
                     ten_persona = None
 
-            """total_score = 0
-            if ten_persona:
-                for field in personality_fields:
-                    ans_id = getattr(ten_persona, f"{field}_id", None)
-                    if not ans_id:
-                        continue
-
-                    try:
-                        model_field = TenantPersonalityDetailsModel._meta\
-                                        .get_field(field).remote_field.model
-                        ctype = ContentType.objects.get_for_model(model_field)
-                        lan_for_field = [
-                            la for la in landlord_answers_qs
-                            if la.question.content_type == ctype
-                        ]
-                    except Exception:
-                        lan_for_field = []
-
-                    if not lan_for_field:
-                        continue
-
-                    sorted_las = sorted(lan_for_field,
-                                        key=lambda la: la.preference or 0)
-                    idx = next((i for i, la in enumerate(sorted_las)
-                                if la.object_id == ans_id), None)
-                    if idx is None:
-                        continue
-
-                    opts = len(sorted_las)
-                    total_score += ((opts - idx) / opts) * max_marks
-
-            match_pct = (round((total_score / total_possible) * 100, 2)
-                        if total_possible else 0.0)"""
             overall, breakdown = compute_personality_match(ten_persona, landlord_answers_qs)
             print("Overall match:", overall)
             for field, pct in breakdown.items():
@@ -1270,6 +1327,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "message": message,
                 "rent_type" : 'Month' if bed_obj.is_rent_monthly else 'Day',
                 "bed_id": bed_obj.id if bed_obj else None,
+                'bed_number' : f'{bed_obj.room.room_name} Bed {bed_obj.bed_number}',
                 "request_closed_by": getattr(payload, "request_closed_by", ""),
                 "is_initiated_by_landlord": (tag == "landlord_req"),
                 "personality_match_percentage": overall,
@@ -1282,15 +1340,25 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                     city_obj.state.country.currency_symbol
                     if city_obj and city_obj.state and city_obj.state.country else ""
                 )
-                td["bed_number"] = bed_obj.bed_number
+                td["bed_number"] = f'{bed_obj.room.room_name} Bed {bed_obj.bed_number}'
                 td["room_name"] = bed_obj.room.room_name
                 td["rent_amount"] = str(bed_obj.rent_amount) + f' {currency_symbol}'
 
             result.append(td)
-
+        print(f'svdsvsdresult {len(result)}')
         # 9) sort by match % desc
-        result.sort(key=lambda x: x["personality_match_percentage"], reverse=True)
-        return result
+        if includeMatchingTenants:
+            # split out those with a real request vs. “matching” only
+            with_request    = [r for r in result if r["interest_status"]]
+            without_request = [r for r in result if not r["interest_status"]]
+            # sort only the “new matches” descending by personality
+            without_request.sort(key=lambda x: x["personality_match_percentage"], reverse=True)
+            # existing requests first, then new matches
+            return with_request + without_request
+        else:
+            # just sort everyone by match %
+            result.sort(key=lambda x: x["personality_match_percentage"], reverse=True)
+            return result
 
 
     @database_sync_to_async
@@ -1392,6 +1460,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "interest_status": '',
                 "message": '',
                 "tenant_id" : tenant_id,
+                'landlord_id' : req.bed.room.property.landlord.id,
                 "is_initiated_by_landlord" : None
             }
         except LandlordInterestRequestModel.DoesNotExist:
@@ -1428,6 +1497,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 "interest_status": req.status,
                 "message": req.landlord_message,
                 "tenant_id" : tenant_id,
+                "landlord_id" : req.bed.room.property.landlord.id,
                 "is_initiated_by_landlord" : False,
             }
         except TenantInterestRequestModel.DoesNotExist:

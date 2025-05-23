@@ -5,11 +5,14 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.timezone import now
 
+from notifications.send_notifications import send_onesignal_notification
+from user.fetch_match_details import compute_personality_match
+
 from .models import AppointmentBookingModel
 from .serializers import BookAppointmentSerializer, GetAppointmentsSerializer
-from landlord.models import LandlordDetailsModel, LandlordRoomWiseBedModel
+from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilitySlotModel
-from tenant.models import TenantDetailsModel
+from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from response import Response as ResponseData
 from user.authentication import EnhancedJWTValidation
 from rest_framework.permissions import IsAuthenticated
@@ -19,135 +22,6 @@ from rest_framework.permissions import AllowAny
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework_simplejwt.authentication import JWTAuthentication
-
-# 1) Tenant’s view — request.user is the tenant
-@api_view(["POST"])
-@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def get_tenant_appointments(request):
-    """
-    Fetch all appointments for the authenticated tenant, optionally filtering by status.
-    Body: {"status": "pending"|"confirmed"|"cancelled"|"completed"}  # optional
-    """
-    status_filter = request.data.get("status", "")
-
-    qs = AppointmentBookingModel.objects.filter(
-        tenant=request.user,
-        is_active=True,
-        is_deleted=False,
-    )
-    if status_filter:
-        qs = qs.filter(status=status_filter)
-
-    if not qs.exists():
-        return Response(
-            ResponseData.success_without_data("No appointments found for this tenant."),
-            status=status.HTTP_200_OK
-        )
-
-    all_appointments = []
-    for idx, appt in enumerate(qs.select_related('landlord', 'bed__room__property', 'time_slot'), start=1):
-        bed = appt.bed
-        room = bed.room
-        slot = appt.time_slot
-
-        all_appointments.append({
-            "appointment_id": appt.id,
-            "landlord": {
-                "id": appt.landlord.id,
-                "first_name": appt.landlord.first_name,
-                "last_name": appt.landlord.last_name,
-            },
-            "bed": {
-                "id": bed.id,
-                "bed_number": bed.bed_number,
-                "room_number": idx,
-                "room_type": room.room_type.type_name if room.room_type else None,
-            },
-            "time_slot": {
-                "slot_id": slot.id,
-                "start_time": slot.start_time.strftime("%H:%M"),
-                "end_time": slot.end_time.strftime("%H:%M"),
-                "date": slot.availability.date.strftime("%Y-%m-%d"),
-            },
-            "status": appt.status,
-            "initiated_by": appt.initiated_by,
-            "created_at": appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "property_name": room.property.property_name if room.property else None,
-            "property_id": room.property.id if room.property else None,
-        })
-
-    return Response(
-        ResponseData.success(all_appointments, "Appointments fetched successfully."),
-        status=status.HTTP_200_OK
-    )
-
-
-# 2) Landlord’s view — request.user is the landlord
-@api_view(["POST"])
-@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def get_landlord_appointments(request):
-    """
-    Fetch all appointments for the authenticated landlord, optionally filtering by property.
-    Body: {"property_id": int}  # optional
-    """
-    property_id = request.data.get("property_id", None)
-
-    qs = AppointmentBookingModel.objects.filter(
-        landlord=request.user,
-        is_active=True,
-        is_deleted=False,
-    )
-    if property_id is not None:
-        qs = qs.filter(bed__room__property__id=property_id)
-
-    if not qs.exists():
-        return Response(
-            ResponseData.success_without_data("No appointments found."),
-            status=status.HTTP_200_OK
-        )
-
-    all_appointments = []
-    for idx, appt in enumerate(qs.select_related('tenant', 'bed__room__property', 'time_slot'), start=1):
-        bed = appt.bed
-        room = bed.room
-        slot = appt.time_slot
-
-        all_appointments.append({
-            "appointment_id": appt.id,
-            "landlord": {
-                "id": appt.landlord.id,
-                "first_name": appt.landlord.first_name,
-                "last_name": appt.landlord.last_name,
-            },
-            "tenant": {
-                "id": appt.tenant.id,
-                "first_name": appt.tenant.first_name,
-                "last_name": appt.tenant.last_name,
-            },
-            "bed": {
-                "id": bed.id,
-                "bed_number": bed.bed_number,
-                "room_number": idx,
-                "room_type": room.room_type.type_name if room.room_type else None,
-            },
-            "time_slot": {
-                "slot_id": slot.id,
-                "start_time": slot.start_time.strftime("%H:%M"),
-                "end_time": slot.end_time.strftime("%H:%M"),
-                "date": slot.availability.date.strftime("%Y-%m-%d"),
-            },
-            "status": appt.status,
-            "initiated_by": appt.initiated_by,
-            "created_at": appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "property_name": room.property.property_name if room.property else None,
-        })
-
-    return Response(
-        ResponseData.success(all_appointments, "Appointments fetched successfully."),
-        status=status.HTTP_200_OK
-    )
 
 
 # 3) Booking view — landlord books for a tenant
@@ -234,7 +108,24 @@ def book_appointment(request):
     bed = appt.bed
     room = bed.room
     prop = room.property if room else None
+    try:
+        tenant_persona = TenantPersonalityDetailsModel.objects.get(
+            tenant_id=tenant.id,
+            is_active=True,
+            is_deleted=False
+        )
+    except TenantPersonalityDetailsModel.DoesNotExist:
+        tenant_persona = None
+    print("   → No tenant personality details found")
+    landlord_answers_qs = list(bed.tenant_preference_answers.all())
+    if not landlord_answers_qs:
+        base_pref = LandlordBasePreferenceModel.objects.filter(
+            landlord_id=bed.room.property.landlord.id
+        ).first()
+        if base_pref:
+            landlord_answers_qs = list(base_pref.answers.all())
 
+    overall, breakdown = compute_personality_match(tenant_persona, landlord_answers_qs)
     result = {
         "appointmentId":   appt.id,
         "landlordId":      landlord.id,
@@ -255,7 +146,18 @@ def book_appointment(request):
         "createdAt":       appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "initiatedBy":     appt.initiated_by,
         "lastUpdatedBy":   appt.last_updated_by,
+        'landlordFirstName' : landlord.first_name,
+        'landlordLastName' : landlord.last_name,
+        "personality_match_percentage": overall,  # Added this field
+        'details_of_personality_match' : breakdown
     }
+    
+    send_onesignal_notification(
+        landlord_ids=[appt.landlord.id],
+        headings={"en": "Appointment Booking Request"},
+        contents={"en": f"Tenant {appt.tenant.first_name} {appt.tenant.last_name} sent you appointment booking request for this slot {appt.time_slot} "},
+        data={"appointment_id": appt.id, "type": "landlord_appointment"},
+    )
     return Response(
         ResponseData.success(result, "Appointment booked successfully."),
         status=status.HTTP_201_CREATED

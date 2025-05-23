@@ -5,7 +5,6 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from landlord.models import LandlordDetailsModel, LandlordEmailVerificationModel
-from notifications.models import DeviceNotificationModel
 from tenant.models import TenantDetailsModel, TenantEmailVerificationModel
 from tenant.views import send_otp_email
 from rest_framework_simplejwt.exceptions import InvalidToken
@@ -44,7 +43,7 @@ from translation_utils import get_translation, DEFAULT_LANGUAGE_CODE
     
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def email_verification(request):
     """API to handle email verification for both tenant and landlord."""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
@@ -54,7 +53,6 @@ def email_verification(request):
             data = serializer.validated_data
             email = data['email']
             otp = data['otp']
-            playerId = data['player_id'] if 'player_id' in request.data else ''
 
             # Validate OTP and email for tenant first
             try:
@@ -73,16 +71,17 @@ def email_verification(request):
                 if make_tenant_active is not None and not make_tenant_active.is_active:
                     make_tenant_active.is_active = True
                     make_tenant_active.save()
-                    notification, created = DeviceNotificationModel.objects.get_or_create(
-                        player_id=playerId,
-                        defaults={'user_id': make_tenant_active.id},
-                    )
                 tenant_verification.is_verified = True
                 tenant_verification.verified_at = now()
                 tenant_verification.save()
                 message = get_translation("SUCC_EMAIL_VERIFIED_TENANT", language_code)
+                tokens = get_tokens_for_user(make_tenant_active)
                 return Response(
-                    ResponseData.success(make_tenant_active.id, message),
+                    ResponseData.success(
+                        {
+                            'tokens' : tokens,
+                            'id' : make_tenant_active.id
+                        }, message),
                     status=status.HTTP_200_OK
                 )
             except TenantEmailVerificationModel.DoesNotExist:
@@ -104,16 +103,17 @@ def email_verification(request):
                 if make_landlord_active is not None and not make_landlord_active.is_active:
                     make_landlord_active.is_active = True
                     make_landlord_active.save()
-                    DeviceNotificationModel.objects.create(
-                        user_id=make_landlord_active.id,
-                        player_id=playerId,
-                    )
                 landlord_verification.is_verified = True
                 landlord_verification.verified_at = now()
                 landlord_verification.save()
                 message = get_translation("SUCC_EMAIL_VERIFIED_LANDLORD", language_code)
+                tokens = get_tokens_for_user(make_landlord_active)
                 return Response(
-                    ResponseData.success(make_landlord_active.id, message),
+                    ResponseData.success(
+                        data={
+                            'tokens' : tokens,
+                            'id' : make_landlord_active.id
+                        }, message=message),
                     status=status.HTTP_200_OK
                 )
             except LandlordEmailVerificationModel.DoesNotExist:
@@ -134,7 +134,7 @@ def email_verification(request):
             ResponseData.error(str(e)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    
+
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
 @permission_classes([AllowAny])
@@ -151,88 +151,91 @@ def login(request):
 
         email = serializer.validated_data['email']
         password = serializer.validated_data['password']
+        isLandlord = serializer.validated_data['isLandlord']
         
-        # Tenant login flow
-        tenant = TenantDetailsModel.objects.filter(email=email, is_active=True).first()
-        if tenant:
-            if tenant.password != '' and password != '':
-                if check_password(password, tenant.password):
+        if not isLandlord:
+            # Tenant login flow
+            tenant = TenantDetailsModel.objects.filter(email=email, is_active=True).first()
+            if tenant:
+                if tenant.password != '' and password != '':
+                    if check_password(password, tenant.password):
+                        tokens = get_tokens_for_user(tenant)
+                        message = get_translation("SUCC_LOGIN_TENANT", language_code)
+                        return Response(
+                            ResponseData.success(
+                                data={
+                                    'user_id': tenant.id,
+                                    'user_type': 'tenant',
+                                    'email': tenant.email,  # Include email in response
+                                    'tokens': tokens
+                                },
+                                message=message
+                            ),
+                            status=status.HTTP_200_OK
+                        )
+                    else:
+                        message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD_TENANT", language_code)
+                        return Response(
+                            ResponseData.error(message),
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                elif password == '':
                     tokens = get_tokens_for_user(tenant)
                     message = get_translation("SUCC_LOGIN_TENANT", language_code)
                     return Response(
                         ResponseData.success(
                             data={
+                                'email': tenant.email,
                                 'user_id': tenant.id,
                                 'user_type': 'tenant',
-                                'email': tenant.email,  # Include email in response
                                 'tokens': tokens
                             },
                             message=message
                         ),
                         status=status.HTTP_200_OK
                     )
-                else:
-                    message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD_TENANT", language_code)
-                    return Response(
-                        ResponseData.error(message),
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            elif password == '':
-                tokens = get_tokens_for_user(tenant)
-                message = get_translation("SUCC_LOGIN_TENANT", language_code)
-                return Response(
-                    ResponseData.success(
-                        data={
-                            'email': tenant.email,
-                            'user_id': tenant.id,
-                            'user_type': 'tenant',
-                            'tokens': tokens
-                        },
-                        message=message
-                    ),
-                    status=status.HTTP_200_OK
-                )
 
-        # Landlord login flow
-        landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
-        if landlord:
-            if landlord.password != '':
-                if check_password(password, landlord.password):
+        else:
+            # Landlord login flow
+            landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
+            if landlord:
+                if landlord.password != '':
+                    if check_password(password, landlord.password):
+                        tokens = get_tokens_for_user(landlord)
+                        message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
+                        return Response(
+                            ResponseData.success(
+                                data={
+                                    'user_id': landlord.id,
+                                    'user_type': 'landlord',
+                                    'email': landlord.email,
+                                    'tokens': tokens
+                                },
+                                message=message
+                            ),
+                            status=status.HTTP_200_OK
+                        )
+                    else:
+                        message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD_LANDLORD", language_code)
+                        return Response(
+                            ResponseData.error(message),
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                elif landlord.password == '':
                     tokens = get_tokens_for_user(landlord)
                     message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
                     return Response(
                         ResponseData.success(
                             data={
                                 'user_id': landlord.id,
-                                'user_type': 'landlord',
                                 'email': landlord.email,
+                                'user_type': 'landlord',
                                 'tokens': tokens
                             },
                             message=message
                         ),
                         status=status.HTTP_200_OK
                     )
-                else:
-                    message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD_LANDLORD", language_code)
-                    return Response(
-                        ResponseData.error(message),
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            elif landlord.password == '':
-                tokens = get_tokens_for_user(landlord)
-                message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
-                return Response(
-                    ResponseData.success(
-                        data={
-                            'user_id': landlord.id,
-                            'email': landlord.email,
-                            'user_type': 'landlord',
-                            'tokens': tokens
-                        },
-                        message=message
-                    ),
-                    status=status.HTTP_200_OK
-                )
 
         # No valid user found
         message = get_translation("ERR_INVALID_EMAIL_OR_PASSWORD", language_code)
@@ -521,10 +524,18 @@ def send_otp(request):
         phone_number = serializer.validated_data['phone_number']
         user_id = serializer.validated_data['user_id']
         role_name = serializer.validated_data['role_name']
+        # ── early‐out if this phone is already in use in either model ──
+        already_in_tenants  = TenantDetailsModel.objects.filter(phone_number=phone_number,is_active=True).exists()
+        already_in_landlords = LandlordDetailsModel.objects.filter(phone_number=phone_number,is_active=True).exists()
 
+        if already_in_tenants or already_in_landlords:
+            return Response(
+                ResponseData.error("This phone number is already registered."),
+                status=status.HTTP_409_CONFLICT
+            )
         otp = str(random.randint(100000, 999999))
         
-        otp_obj, created = OTPModel.objects.update_or_create(
+        OTPModel.objects.update_or_create(
             role_name=role_name,
             phone_number=phone_number,
             defaults={

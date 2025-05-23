@@ -8,10 +8,19 @@ from rest_framework.decorators import api_view,parser_classes
 from rest_framework.response import Response
 from rest_framework import status
 from localization.models import CityModel, CountryModel
-from tenant.models import TenantDetailsModel
+from notifications.models import TenantDeviceNotificationModel
+from notifications.send_notifications import send_onesignal_notification
+from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from response import Response as ResponseData
+from tenant.views import send_otp_email
+from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
+from translations.models import LanguageModel
 from user.authentication import EnhancedJWTValidation
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
+from tenant.models import TenantDetailsModel
+from user.fetch_match_details import compute_personality_match
+from user.jwt_utils import get_tokens_for_user
 from .models import LandlordBasePreferenceModel, LandlordBedMediaModel, LandlordDetailsModel, LandlordDocumentTypeModel, LandlordEmailVerificationModel, LandlordIdentityVerificationFile, LandlordIdentityVerificationModel, LandlordOptionModel, LandlordPropertyAmenityModel, LandlordPropertyDetailsModel, LandlordPropertyMediaModel, LandlordPropertyRoomDetailsModel, LandlordPropertyRoomTypeModel, LandlordPropertyTypeModel, LandlordQuestionModel, LandlordRoomMediaModel
 from django.contrib.auth.hashers import make_password
 from django.core.mail import send_mail
@@ -28,118 +37,124 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
+
+PENDING_OR_ACCEPTED = ["pending", "accepted"]
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def landlord_signup(request):
     """API to handle landlord signup"""
     try:
+        print(request.data)
         serializer = LandlordSignupSerializer(data=request.data)
-
+        # Validate incoming data
         if serializer.is_valid():
+            # Get the language code from request (if provided) for translation lookup
+            language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
+            if not language_code:
+                language_code = DEFAULT_LANGUAGE_CODE
             email = serializer.validated_data['email']
-            tenant = TenantDetailsModel.objects.filter(email=email,is_active=True).first()
-            if tenant is not None:
+            # First check if the email exists for a landlord
+            landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
+            if landlord is not None:
+                message = get_translation("ERR_EMAIL_EXISTS_FOR_LANDLORD", language_code)
                 return Response(
-                    ResponseData.error("This email already exists for tenant"),
+                    ResponseData.error(message),
                     status=status.HTTP_200_OK
                 )
-            # Check if the email already exists in LandlordDetailsModel
-            landlord = LandlordDetailsModel.objects.filter(email=email).first()
 
-            if landlord:
-                # If landlord exists, check for an ongoing OTP verification
+            # Try to get language for the tenant from the request if provided
+            preferred_language = None
+            try:
+                preferred_language = LanguageModel.objects.get(code=language_code)
+            except LanguageModel.DoesNotExist:
+                preferred_language = None
+
+            # If the tenant exists but is not active
+            if landlord is not None and landlord.is_active is False:
+                # Check for existing, unverified OTP
                 landlord_verification = LandlordEmailVerificationModel.objects.filter(
-                    landlord=landlord, is_verified=False
+                    landlord=landlord,
+                    is_verified=False
                 ).first()
-
+                otp = str(random.randint(100000, 999999))  # Generate OTP
                 if landlord_verification:
-                    # If OTP exists but not verified, generate a new OTP and send it
-                    otp = str(random.randint(100000, 999999))  # Generate a new 6-digit OTP
-                    landlord_verification.otp = otp  # Update OTP
-                    landlord_verification.created_at = now()  # Update the created time
+                    # Generate a new OTP and send email
+                    landlord_verification.otp = otp
+                    landlord_verification.created_at = now()
                     landlord_verification.save()
-
-                    # Send OTP email
-                    try:
-                        send_mail(
-                            subject='Verify Your Email',
-                            message=f'Your OTP for email verification is: {otp}',
-                            from_email=None,  # Uses DEFAULT_FROM_EMAIL in settings.py
-                            recipient_list=[],
-                            fail_silently=False,  # Raise error if email fails
-                        )
-                    except Exception as e:
-                        raise Exception(f"Failed to send email: {str(e)}")
-
-                    return Response(
-                        ResponseData.success_without_data("OTP sent successfully."),
-                        status=status.HTTP_200_OK
-                    )
-
+                    send_otp_email(landlord.email, otp)
                 else:
-                    # If no verification exists, create a new OTP entry
-                    otp = str(random.randint(100000, 999999))  # Generate a new OTP
+                    # No unverified OTP exists; create a new verification entry
                     LandlordEmailVerificationModel.objects.create(
                         landlord=landlord,
                         otp=otp,
                         is_verified=False,
                         created_at=now()
                     )
-
-                    # Send OTP email
-                    try:
-                        send_mail(
-                            subject='Verify Your Email',
-                            message=f'Your OTP for email verification is: {otp}',
-                            from_email=None,  # Uses DEFAULT_FROM_EMAIL in settings.py
-                            recipient_list=[],
-                            fail_silently=False,  # Raise error if email fails
-                        )
-                    except Exception as e:
-                        raise Exception(f"Failed to send email: {str(e)}")
-
-                    return Response(
-                        ResponseData.success_without_data("OTP sent successfully."),
-                        status=status.HTTP_200_OK
-                    )
-
-            else:
-                # If the email doesn't exist, create a new landlord
-                validated_data = serializer.validated_data
-                validated_data['password'] = make_password(validated_data['password'])  # Hash password
-                landlord = LandlordDetailsModel.objects.create(**validated_data)
-
-                # Generate OTP for the new landlord
-                otp = str(random.randint(100000, 999999))  # 6-digit OTP
-                LandlordEmailVerificationModel.objects.create(
-                    landlord=landlord,
-                    otp=otp,
-                    is_verified=False,
-                    created_at=now()
-                )
-
-                # Send OTP email
-                try:
-                    send_mail(
-                        subject='Verify Your Email',
-                        message=f'Your OTP for email verification is: {otp}',
-                        from_email=None,  # Uses DEFAULT_FROM_EMAIL in settings.py
-                        recipient_list=[landlord.email],
-                        fail_silently=False,  # Raise error if email fails
-                    )
-                except Exception as e:
-                    raise Exception(f"Failed to send email: {str(e)}")
-
+                    send_otp_email(landlord.email, otp)
+                message = get_translation("SUCC_LANDLORD_OTP_SENT", language_code)
                 return Response(
-                    ResponseData.success_without_data("Landlord signed up successfully. Please verify your email."),
-                    status=status.HTTP_201_CREATED
+                    ResponseData.success_without_data(message),
+                    status=status.HTTP_200_OK
                 )
-        return Response(
-            ResponseData.error(serializer.errors),
-            status=status.HTTP_400_BAD_REQUEST
+            elif landlord is not None and landlord.is_active is True:
+                message = get_translation("ERR_EMAIL_EXISTS", language_code)
+                return Response(
+                    ResponseData.error(message),
+                    status=status.HTTP_200_OK
+                )
+            else:
+                # If the tenant doesn't exist, create a new tenant
+                validated_data = serializer.validated_data
+                print(f"validated_data {validated_data}")
+                if validated_data['password'] != '':
+                    validated_data['password'] = make_password(validated_data['password'])
+                    # If a preferred language is found, add it to the data
+                    if preferred_language:
+                        validated_data['preferred_language'] = preferred_language
+                    landlord = LandlordDetailsModel.objects.create(**validated_data)
+                    # Generate OTP for the new tenant
+                    otp = str(random.randint(100000, 999999))
+                    LandlordEmailVerificationModel.objects.create(
+                        landlord=landlord,
+                        otp=otp,
+                        is_verified=False,
+                        created_at=now()
+                    )
+                    send_otp_email(landlord.email, otp)
+                    message = get_translation("SUCC_LANDLORD_SIGNUP_VERIFY", language_code)
+                    tokens = get_tokens_for_user(landlord)
+                
+                    return Response(
+                        ResponseData.success(data={
+                            'tokens' : tokens,
+                            'id' : landlord.id
+                        }, message=message),
+                        status=status.HTTP_201_CREATED
+                    )
+                else:
+                    # If no password is provided, create tenant as active directly.
+                    if preferred_language:
+                        validated_data['preferred_language'] = preferred_language
+                    landlord = LandlordDetailsModel.objects.create(**validated_data, is_active=True)
+                    message = get_translation("SUCC_LANDLORD_SIGNUP", language_code)
+                    tokens = get_tokens_for_user(landlord)
+                    return Response(
+                        ResponseData.success(data={
+                            'tokens' : tokens,
+                            'id' : landlord.id
+                        }, message=message),
+                        status=status.HTTP_201_CREATED
+                    )
+        # If the serializer validation fails, return errors
+        error_message = " ".join(
+            [f"{key}: {', '.join(value)}" for key, value in serializer.errors.items()]
         )
-
+        return Response(
+            ResponseData.error(error_message),
+            status=status.HTTP_409_CONFLICT
+        )
     except Exception as e:
         return Response(
             ResponseData.error(str(e)),
@@ -151,55 +166,68 @@ def landlord_signup(request):
 @permission_classes([IsAuthenticated])
 def get_preference_questions(request):
     """
-    Fetch all landlord questions, but if the client POSTs an `answers` list,
-    use those first (by priority_order); otherwise fall back to per-bed or base prefs.
+    ...existing docstring...
     """
     serializer = LandlordQuestionRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    landlord_id        = serializer.validated_data["user_id"]
-    bed_id             = serializer.validated_data.get("bed_id")
-    use_base           = serializer.validated_data.get("is_base_preference", False)
-    client_answers     = serializer.validated_data.get("answers", [])
-    print(f'client_answersssd {client_answers}')
+    landlord_id    = serializer.validated_data["user_id"]
+    bed_id         = serializer.validated_data.get("bed_id")
+    use_base       = serializer.validated_data.get("is_base_preference", False)
+    client_answers = serializer.validated_data.get("answers", [])
+
     # 1) fetch landlord
     landlord = LandlordDetailsModel.objects.filter(
         id=landlord_id, is_active=True, is_deleted=False
     ).first()
     if not landlord:
-        return Response(ResponseData.error("Invalid landlord"),
-                        status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            ResponseData.error("Invalid landlord"),
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
-    # 2) build a quick map of client-sent answers
-    client_map: Dict[int, Dict[str, Any]] = {
+    # 2) client_map unchanged
+    client_map = {
         ans["question_id"]: ans
         for ans in client_answers
         if "question_id" in ans
     }
 
-    # 3) pre-load all per-bed answers (if any)
+    # 3) build bed_map unchanged
     bed_map: Dict[int, List[Dict[str,int]]] = {}
     if bed_id is not None:
         bed_qs = LandlordRoomWiseBedModel.objects.filter(id=bed_id).first()
         if bed_qs:
-            print(f'bed_answers {bed_qs.tenant_preference_answers}')
             for a in bed_qs.tenant_preference_answers.filter(is_active=True, is_deleted=False):
-                bed_map.setdefault(a.question_id, []) \
-                       .append({"option_id": a.object_id, "preference": a.preference})
+                bed_map.setdefault(a.question_id, []).append({
+                    "option_id": a.object_id,
+                    "preference": a.preference
+                })
 
-    # 4) pre-load base answers (if requested)
+    # 4) build base_map only if use_base (unchanged)
     base_map: Dict[int, List[Dict[str,int]]] = {}
     if use_base:
         base = LandlordBasePreferenceModel.objects.filter(landlord=landlord).first()
         if base:
             for a in base.answers.filter(is_active=True, is_deleted=False):
-                base_map.setdefault(a.question_id, []) \
-                        .append({"option_id": a.object_id, "preference": a.preference})
+                base_map.setdefault(a.question_id, []).append({
+                    "option_id": a.object_id,
+                    "preference": a.preference
+                })
 
-    # 5) fetch every question only once
+    # --- NEW: load _all_ base answers for the flag, regardless of use_base ---
+    base_all = []
+    base_pref_all = LandlordBasePreferenceModel.objects.filter(landlord=landlord).first()
+    if base_pref_all:
+        base_all = list(base_pref_all.answers.filter(is_active=True, is_deleted=False))
+
+    # 5) compute flag from bed_map OR base_all
+    is_preference_found = bool(bed_map) or bool(base_all)
+
+    # 6) fetch questions + build response exactly as before...
     questions = LandlordQuestionModel.objects.filter(
         is_active=True, is_deleted=False
-    ).select_related("question_type","content_type")
+    ).select_related("question_type", "content_type")
 
     response: List[Dict[str,Any]] = []
     for q in questions:
@@ -215,49 +243,44 @@ def get_preference_questions(request):
             "answers": []
         }
 
-        # build options list
-        opts = []
+        # build options (unchanged)…
         if q.content_type:
-            print("ContentType row:", q.content_type_id, 
-                q.content_type.app_label, 
-                q.content_type.model)
-
-            model = q.content_type.model_class()
-            print("Resolved model:", model)
             model = q.content_type.model_class()
             if model is not None:
-                for o in model.objects.filter(is_active=True, is_deleted=False):
-                    opts.append({"id": o.id, "option_text": getattr(o, "title", str(o))})
-        print(f'q.question_text {q.question_text}')
-        print(f'optsvsddv {opts}')
-        qd["question_options"] = opts
+                opts = [
+                  {"id": o.id, "option_text": getattr(o, "title", str(o))}
+                  for o in model.objects.filter(is_active=True, is_deleted=False)
+                ]
+                qd["question_options"] = opts
 
-        # decide which source we use
+        # select answers exactly as before (client_map → bed_map → base_map)
         if q.id in client_map:
-            # client override
             payload = client_map[q.id]
             for idx, opt_id in enumerate(payload.get("priority_order", []), start=1):
                 qd["answers"].append({"option_id": opt_id, "preference": idx})
 
         elif q.id in bed_map:
-            # bed-specific
-            # already ordered by .preference?
             for entry in sorted(bed_map[q.id], key=lambda x: x["preference"]):
                 qd["answers"].append(entry)
 
         elif q.id in base_map:
-            # base prefs
             for entry in sorted(base_map[q.id], key=lambda x: x["preference"]):
                 qd["answers"].append(entry)
 
-        # else leaves answers = []
-
         response.append(qd)
 
+    # 7) return with the new flag included
     return Response(
-        ResponseData.success(response, "Preferences fetched"),
+        ResponseData.success(
+            {
+              "questions": response,
+              "isPreferenceFound": is_preference_found
+            },
+            "Preferences fetched"
+        ),
         status=status.HTTP_200_OK
     )
+
 
 
 
@@ -565,7 +588,9 @@ def add_landlord_property_details(request):
             n_beds = rm.get("number_of_beds")
             r_floor = rm.get("floor")
             n_windows = rm.get("number_of_windows")
-            max_people = rm.get("max_people_allowed")
+            max_people_allowed = rm.get("max_people_allowed")
+            current_male_occupants = rm.get("current_male_occupants")
+            current_female_occupants = rm.get("current_female_occupants")
 
             if not room_type_id or not room_size:
                 continue
@@ -582,7 +607,9 @@ def add_landlord_property_details(request):
                 room_size=room_size,
                 number_of_beds=n_beds if n_beds else None,
                 number_of_windows=n_windows if n_windows else None,
-                max_people_allowed=max_people if max_people else None,
+                max_people_allowed=max_people_allowed if max_people_allowed else None,
+                current_male_occupants=current_male_occupants if current_male_occupants else None,
+                current_female_occupants=current_female_occupants if current_female_occupants else None,
                 floor=r_floor if r_floor else None,
                 location_in_property=loc
             )
@@ -694,356 +721,27 @@ def add_landlord_property_details(request):
                 print(f"Error deleting directory {base_dir}: {e}")
         else:
             print(f"Directory does not exist: {base_dir}")
+    # Assuming you have the property_city_instance
+    tenant_ids = list(
+        TenantDetailsModel.objects
+        .filter(
+            preferred_city=property_city_instance,
+            is_active=True,
+            is_deleted=False
+        )
+        .values_list('id', flat=True)
+    )
+    print(f'tenant_ids ${tenant_ids}')
 
+    if tenant_ids:
+        send_onesignal_notification(
+        tenant_ids=tenant_ids,
+        headings={"en": "New Property in Your Preferred City"},
+        contents={"en": f"A landlord just listed “{property_name}” in {property_city}."},
+        data={"property_id": property_instance.id, "type": "tenant_new_property"},
+        )
     return Response({"status": "success", "message": "Property details saved successfully."}, status=status.HTTP_201_CREATED)
 
-'''@api_view(['POST'])
-@parser_classes([MultiPartParser, FormParser])
-def update_landlord_property_details(request):
-    try:
-        # Print all POST keys and values
-        try:
-            for key, value in request.POST.items():
-                print(f"{key}: {value}")
-        except Exception as e:
-            print(f"Error reading request.POST data: {str(e)}")
-            return Response({'status': 'error', 'message': 'Error reading request data'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Print files (if any are uploaded)
-        try:
-            for key, file in request.FILES.items():
-                print(f"File - {key}: {file.name}")
-        except Exception as e:
-            print(f"Error reading uploaded files: {str(e)}")
-            return Response({'status': 'error', 'message': 'Error reading uploaded files'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # 1) Validate required fields (including property_id)
-        try:
-            property_id = request.POST.get("property_id")
-            if not property_id:
-                return Response({"status": "error", "message": "Missing property_id."}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            print(f"Error extracting property_id: {str(e)}")
-            return Response({"status": "error", "message": "Error extracting property_id."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # 2) Get the property instance; ensure it exists and is active
-        try:
-            property_instance = LandlordPropertyDetailsModel.objects.get(id=property_id, is_deleted=False)
-        except LandlordPropertyDetailsModel.DoesNotExist:
-            return Response({"status": "error", "message": "Property not found."}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            print(f"Error retrieving property instance: {str(e)}")
-            return Response({"status": "error", "message": "Error retrieving property instance."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # 3) Update basic property fields only if provided.
-        update_fields = {}
-        try:
-            if "propertyName" in request.POST:
-                prop_name = request.POST.get("propertyName").strip()
-                if property_instance.property_name != prop_name:
-                    update_fields["property_name"] = prop_name
-
-            if "propertySize" in request.POST:
-                prop_size = request.POST.get("propertySize").strip()
-                if property_instance.property_size != prop_size:
-                    update_fields["property_size"] = prop_size
-
-            if "propertyDescription" in request.POST:
-                prop_desc = request.POST.get("propertyDescription", "").strip()
-                if property_instance.property_description != prop_desc:
-                    update_fields["property_description"] = prop_desc
-
-            if "floor" in request.POST:
-                floor_val = request.POST.get("floor")
-                if property_instance.floor != floor_val:
-                    update_fields["floor"] = floor_val
-
-            if "number_of_rooms" in request.POST:
-                number_of_rooms = request.POST.get("number_of_rooms")
-                if property_instance.number_of_rooms != number_of_rooms:
-                    update_fields["number_of_rooms"] = number_of_rooms
-
-            if update_fields:
-                try:
-                    LandlordPropertyDetailsModel.objects.filter(id=property_id).update(**update_fields)
-                except Exception as e:
-                    print(f"Error updating property fields: {str(e)}")
-        except Exception as e:
-            print(f"Error processing basic property fields: {str(e)}")
-
-        # 4) Update Property Amenities if provided.
-        if "amenities" in request.POST:
-            try:
-                amenities_json = request.POST.get("amenities")
-                if amenities_json:
-                    try:
-                        amenities_list = json.loads(amenities_json)
-                    except Exception as e:
-                        print(f"Error parsing amenities JSON: {str(e)}")
-                        return Response({"status": "error", "message": "Invalid amenities JSON."}, status=status.HTTP_400_BAD_REQUEST)
-                    print(f'amenities_list {amenities_list}')
-                    if amenities_list:
-                        try:
-                            valid_amenities = LandlordPropertyAmenityModel.objects.filter(
-                                id__in=amenities_list, is_active=True, is_deleted=False
-                            )
-                            if len(valid_amenities) != len(amenities_list):
-                                return Response({"status": "error", "message": "One or more amenity IDs are invalid."}, status=status.HTTP_400_BAD_REQUEST)
-                            property_instance.amenities.set(valid_amenities)
-                        except Exception as e:
-                            print(f"Error setting amenities: {str(e)}")
-                            return Response({"status": "error", "message": "Error setting amenities."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            except Exception as e:
-                print(f"General error processing amenities: {str(e)}")
-
-        # 6) Handle Rooms and Beds (only if "rooms" key exists)
-        print(f'rooms_data {request.POST.get("rooms")}')
-        if "rooms" in request.POST:
-            try:
-                rooms_json = request.POST.get("rooms")
-                rooms_data = json.loads(rooms_json)
-            except Exception as e:
-                print(f"Error parsing rooms JSON: {str(e)}")
-                return Response({"status": "error", "message": "Invalid rooms JSON."}, status=status.HTTP_400_BAD_REQUEST)
-
-            for idx, rm in enumerate(rooms_data):
-                try:
-                    room_id = rm.get("id")
-                    try:
-                        room_type_id = rm.get("room_type")
-                        room_size = rm.get("room_size")
-                        loc = rm.get("location_in_property", "")
-                        n_beds = rm.get("number_of_beds")
-                        r_floor = rm.get("floor")
-                        n_windows = rm.get("number_of_windows")
-                        max_people = rm.get("max_people_allowed")
-                    except Exception as e:
-                        print(f"Error extracting new room data: {str(e)}")
-                        continue
-
-                    try:
-                        room_type_obj = LandlordPropertyRoomTypeModel.objects.get(id=room_type_id, is_active=True, is_deleted=False)
-                    except LandlordPropertyRoomTypeModel.DoesNotExist as e:
-                        print(f"Room type {room_type_id} does not exist: {str(e)}")
-                        continue
-                except Exception as e:
-                    print(f"Error getting room id: {str(e)}")
-                    continue
-
-                if room_id != -1:
-                    try:
-                        room_instance, created = LandlordPropertyRoomDetailsModel.objects.get_or_create(id=room_id)
-                    except Exception as e:
-                        print(f"Error getting/creating room with id {room_id}: {str(e)}")
-                        continue
-
-                    if not created:
-                        update_fields = {}
-                        if "room_type" in rm and room_instance.room_size != rm.get("room_type"):
-                            update_fields["room_type"] = room_type_obj
-                        if "room_size" in rm and room_instance.room_size != rm.get("room_size"):
-                            update_fields["room_size"] = rm.get("room_size")
-                        if "number_of_beds" in rm and room_instance.number_of_beds != rm.get("number_of_beds"):
-                            update_fields["number_of_beds"] = rm.get("number_of_beds")
-                        if "number_of_windows" in rm and room_instance.number_of_windows != rm.get("number_of_windows"):
-                            update_fields["number_of_windows"] = rm.get("number_of_windows")
-                        if "max_people_allowed" in rm and room_instance.max_people_allowed != rm.get("max_people_allowed"):
-                            update_fields["max_people_allowed"] = rm.get("max_people_allowed")
-                        if "floor" in rm and room_instance.floor != rm.get("floor"):
-                            update_fields["floor"] = rm.get("floor")
-                        if "location_in_property" in rm and room_instance.location_in_property != rm.get("location_in_property", ""):
-                            update_fields["location_in_property"] = rm.get("location_in_property", "")
-                        if update_fields:
-                            print(f'update_fields_newly {update_fields}')
-                            try:
-                                LandlordPropertyRoomDetailsModel.objects.filter(id=room_id).update(**update_fields)
-                            except Exception as e:
-                                print(f"Error updating room {room_id}: {str(e)}")
-                elif room_id == -1:
-                    try:
-                        room_instance = LandlordPropertyRoomDetailsModel.objects.create(
-                            property=property_instance,
-                            room_type=room_type_obj,
-                            room_size=room_size,
-                            number_of_beds=n_beds if n_beds else None,
-                            number_of_windows=n_windows if n_windows else None,
-                            max_people_allowed=max_people if max_people else None,
-                            floor=r_floor if r_floor else None,
-                            location_in_property=loc,
-                        )
-                    except Exception as e:
-                        print(f"Error creating new room: {str(e)}")
-                        continue
-
-                # Handle beds (only if "beds" key is present)
-                try:
-                    beds_data = rm.get("beds", [])
-                    print(f'beds_data_updated {beds_data}')
-                except Exception as e:
-                    print(f"Error getting beds data: {str(e)}")
-                    continue
-                # Extracting bed IDs from beds_data
-                bed_ids_from_data = [bd.get("id") for bd in beds_data if bd.get("id")]
-                print(f'bed_ids_from_data12 {bed_ids_from_data}')
-                # Marking beds as inactive if they are NOT in the given bed_ids_from_data
-                LandlordRoomWiseBedModel.objects.filter(
-                    room=room_instance  # Get beds only for the current room
-                ).exclude(
-                    id__in=bed_ids_from_data  # Exclude beds that are present in beds_data
-                ).update(is_active=False,is_deleted=True) 
-                for b_idx, bd in enumerate(beds_data):
-                    try:
-                        bed_id = bd.get("id")
-                    except Exception as e:
-                        print(f"Error extracting bed id: {str(e)}")
-                        continue
-
-                    if bed_id != -1:
-                        try:
-                            bed_instance, created = LandlordRoomWiseBedModel.objects.get_or_create(id=bed_id)
-                            print(f'Bed with id {bed_id} {"created" if created else "retrieved"}')
-                        except Exception as e:
-                            print(f"Error getting/creating bed with id {bed_id}: {str(e)}")
-                            continue
-                        print(f'bed_tenant_same_as_value {bd.get("tenant_preference_same_as")}')
-                        if not created:
-                            update_fields = {}
-                            if "rent_amount" in bd and bed_instance.rent_amount != bd.get("rent_amount"):
-                                update_fields["rent_amount"] = bd.get("rent_amount")
-                            if "availability_start_date" in bd and bed_instance.availability_start_date != bd.get("availability_start_date"):
-                                update_fields["availability_start_date"] = bd.get("availability_start_date")
-                            if "is_rent_monthly" in bd and bed_instance.is_rent_monthly != bd.get("is_rent_monthly"):
-                                update_fields["is_rent_monthly"] = bd.get("is_rent_monthly")
-                            if "min_agreement_duration_in_months" in bd and bed_instance.min_agreement_duration_in_months != bd.get("min_agreement_duration_in_months"):
-                                update_fields["min_agreement_duration_in_months"] = bd.get("min_agreement_duration_in_months")
-                            if update_fields:
-                                try:
-                                    LandlordRoomWiseBedModel.objects.filter(id=bed_id).update(**update_fields)
-                                    print(f"Updated bed {bed_id} with {update_fields}")
-                                except Exception as e:
-                                    print(f"Error updating bed {bed_id}: {str(e)}")
-                        print(f"Reached bed instance: {bed_instance}")
-                    elif bed_id == -1:
-                        try:
-                            bed_number = bd.get("bed_number")
-                            is_rent_monthly = bd.get("is_rent_monthly")
-                            min_agreement_duration_in_months = bd.get("min_agreement_duration_in_months")
-                            rent_amount = bd.get("rent_amount")
-                            availability_start_date = bd.get("availability_start_date")
-                            is_available = False if availability_start_date is None else True
-                            print('Creating new bed...')
-                        except Exception as e:
-                            print(f"Error extracting new bed data: {str(e)}")
-                            continue
-
-                        if not rent_amount:
-                            continue
-                        try:
-                            bed_instance = LandlordRoomWiseBedModel.objects.create(
-                                room=room_instance,
-                                bed_number=bed_number,
-                                is_available=is_available,
-                                rent_amount=rent_amount,
-                                availability_start_date=None if availability_start_date == "" else availability_start_date,
-                                is_rent_monthly=is_rent_monthly,
-                                min_agreement_duration_in_months= 0 if not is_rent_monthly else min_agreement_duration_in_months
-                            )
-                        except Exception as e:
-                            print(f"Error creating new bed: {str(e)}")
-                            continue
-
-                    # Process bed preferences for each bed
-                    try:
-                        answers = bd.get("bed_preferences", [])
-                        print(f'answers12345 {answers}')
-                    except Exception as e:
-                        print(f"Error extracting bed preferences: {str(e)}")
-                        continue
-
-                    for answer in answers:
-                        try:
-                            question_id = answer.get("question_id")
-                            selected_answers = answer.get("priority_order", [])
-                        except Exception as e:
-                            print(f"Error extracting answer data: {str(e)}")
-                            continue
-                        try:
-                            question = LandlordQuestionModel.objects.filter(id=question_id, is_active=True).first()
-                            if not question:
-                                print(f"Question {question_id} not found or inactive.")
-                                continue
-                        except Exception as e:
-                            print(f"Error retrieving question {question_id}: {str(e)}")
-                            continue
-
-                        print(f'selected_answers_while_update {selected_answers}')
-                        try:
-                            existing_answers = bed_instance.tenant_preference_answers.filter(
-                                question=question,
-                                is_active=True,
-                                is_deleted=False
-                            ).order_by('preference')
-                        except Exception as e:
-                            print(f"Error retrieving existing answers for question {question_id}: {str(e)}")
-                            continue
-
-                        try:
-                            if selected_answers:
-                                print('Entered answer update loop')
-                                new_option_ids = {ans for ans in selected_answers}
-                                try:
-                                    existing_answers.exclude(object_id__in=new_option_ids).delete()
-                                except Exception as e:
-                                    print(f"Error deleting old answers for question {question_id}: {str(e)}")
-                            else:
-                                try:
-                                    existing_answers.delete()
-                                except Exception as e:
-                                    print(f"Error deleting all answers for question {question_id}: {str(e)}")
-                        except Exception as e:
-                            print(f"Error processing selected_answers for question {question_id}: {str(e)}")
-                            continue
-
-                        for priority, option_id in enumerate(selected_answers, start=1):
-                            print(f'priority, option_id {priority}, {option_id}')
-                            try:
-                                try:
-                                    option_content_type = ContentType.objects.get_for_model(question.question_type)
-                                except Exception as e:
-                                    print(f"Error retrieving content type for question {question_id}: {str(e)}")
-                                    continue
-
-                                try:
-                                    answer_obj = bed_instance.tenant_preference_answers.get(
-                                        question=question,
-                                        content_type=option_content_type,
-                                        object_id=option_id,
-                                    )
-                                    if answer_obj.preference != priority:
-                                        answer_obj.preference = priority
-                                        answer_obj.save()
-                                except LandlordAnswerModel.DoesNotExist:
-                                    answer_obj = LandlordAnswerModel.objects.create(
-                                        landlord=property_instance.landlord,
-                                        question=question,
-                                        content_type=option_content_type,
-                                        object_id=option_id,
-                                        preference=priority,
-                                    )
-                                
-                                if not bed_instance.tenant_preference_answers.filter(id=answer_obj.id).exists():
-                                    bed_instance.tenant_preference_answers.add(answer_obj)
-                            except Exception as e:
-                                print(f"Error updating/creating answer for question {question_id} with option {option_id}: {str(e)}")
-                    print(f"Finished processing bed {b_idx} for room {idx}")
-        return Response(
-            {"status": "success", "message": "Property details updated successfully."},
-            status=status.HTTP_200_OK
-        )
-    except Exception as e:
-        print(f"Unexpected error in update_landlord_property_details: {str(e)}")
-        return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-'''
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -1099,7 +797,34 @@ def update_landlord_property_details(request):
                 return Response({"status":"error","message":"One or more amenity IDs are invalid."},
                                 status=status.HTTP_400_BAD_REQUEST)
             prop.amenities.set(valid)
+        # Assuming you have the property_city_instance
+        tenants_for_property = (
+            TenantDetailsModel.objects
+            .filter(
+                Q(
+                    tenant_interest_requests__bed__room__property_id=property_id,
+                    tenant_interest_requests__status__in=PENDING_OR_ACCEPTED,
+                    tenant_interest_requests__is_active=True,
+                    tenant_interest_requests__is_deleted=False,
+                )
+                |
+                Q(
+                    landlord_interest_requests__bed__room__property_id=property_id,
+                    landlord_interest_requests__status__in=PENDING_OR_ACCEPTED,
+                    landlord_interest_requests__is_active=True,
+                    landlord_interest_requests__is_deleted=False,
+                )
+            )
+            .distinct()
+        )
 
+        if tenants_for_property:
+            send_onesignal_notification(
+            tenant_ids=tenants_for_property,
+            headings={"en": "Property details updated by landlord"},
+            contents={"en": f"A landlord just updated “{prop.property_name}” in {prop.property_city}."},
+            data={"property_id": prop.id, "type": "tenant_update_property"},
+            )
         return Response({"status":"success","message":"Property details updated successfully."},
                         status=status.HTTP_200_OK)
 
@@ -1175,6 +900,8 @@ def update_landlord_room(request):
                 ("number_of_beds", "number_of_beds"),
                 ("number_of_windows", "number_of_windows"),
                 ("max_people_allowed", "max_people_allowed"),
+                ("current_male_occupants", "current_male_occupants"),
+                ("current_female_occupants", "current_female_occupants"),
                 ("floor", "floor"),
                 ("location_in_property", "location_in_property"),
             ]:
@@ -1194,7 +921,7 @@ def update_landlord_room(request):
                 # assume exactly one bed per private room
                 LandlordRoomWiseBedModel.objects.filter(
                     room_id=room_id, is_deleted=False
-                ).update(availability_start_date=availability,rent_amount=rent_amount,
+                ).update(availability_start_date=availability,rent_amount=rent_amount,is_active=True,
                          min_agreement_duration_in_months=room_data.get("min_agreement_duration_in_months"))
             if rt.type_name.lower() == "private" and tenant_preference:
                 # assume exactly one bed per private room
@@ -1214,6 +941,8 @@ def update_landlord_room(request):
                 number_of_beds=room_data.get("number_of_beds"),
                 number_of_windows=room_data.get("number_of_windows"),
                 max_people_allowed=room_data.get("max_people_allowed"),
+                current_male_occupants=room_data.get("current_female_occupants"),
+                current_female_occupants=room_data.get("current_female_occupants"),
                 floor=room_data.get("floor"),
                 location_in_property=room_data.get("location_in_property", ""),
             )
@@ -1255,6 +984,35 @@ def update_landlord_room(request):
                         # if you do want to set availability only when provided, otherwise leave null:
                         availability_start_date=availability if availability else None,
                     )
+        # Assuming you have the property_city_instance
+        tenants_for_room = (
+            TenantDetailsModel.objects
+            .filter(
+                Q(
+                    tenant_interest_requests__bed__room_id=room_id,
+                    tenant_interest_requests__status__in=PENDING_OR_ACCEPTED,
+                    tenant_interest_requests__is_active=True,
+                    tenant_interest_requests__is_deleted=False,
+                )
+                |
+                Q(
+                    landlord_interest_requests__bed__room_id=room_id,
+                    landlord_interest_requests__status__in=PENDING_OR_ACCEPTED,
+                    landlord_interest_requests__is_active=True,
+                    landlord_interest_requests__is_deleted=False,
+                )
+            )
+            .distinct()
+        )
+
+
+        if tenants_for_room:
+            send_onesignal_notification(
+            tenant_ids=tenants_for_room,
+            headings={"en": "Room details updated"},
+            contents={"en": f"A landlord just updated details of a room"},
+            data={"room_id": rt.id, "type": "tenant_update_property"},
+            )
         return Response({"status": "success", "message": "Room saved.","roomId" : room_id if room_id != -1 else new_room.id}, status=200)
 
     except Exception as e:
@@ -1424,6 +1182,34 @@ def update_landlord_bed(request):
                     )
                     room.room_type = sharing_type
                     room.save(update_fields=["room_type"])
+        tenants_for_bed = (
+            TenantDetailsModel.objects
+            .filter(
+                # tenant-initiated interest
+                Q(
+                    tenant_interest_requests__bed_id=bed_id,
+                    tenant_interest_requests__status__in=PENDING_OR_ACCEPTED,
+                    tenant_interest_requests__is_active=True,
+                    tenant_interest_requests__is_deleted=False,
+                )
+                |
+                # landlord-initiated interest
+                Q(
+                    landlord_interest_requests__bed_id=bed_id,
+                    landlord_interest_requests__status__in=PENDING_OR_ACCEPTED,
+                    landlord_interest_requests__is_active=True,
+                    landlord_interest_requests__is_deleted=False,
+                )
+            )
+            .distinct()
+        )
+        if tenants_for_bed:
+            send_onesignal_notification(
+            tenant_ids=tenants_for_bed,
+            headings={"en": "Bed details updated"},
+            contents={"en": f"A landlord just updated bed details"},
+            data={"bed_id": bed_obj.id, "type": "tenant_update_property"},
+            )
         return Response({"status":"success","message":"Bed saved."}, status=200)
 
     except Exception as e:
@@ -1435,8 +1221,17 @@ def update_landlord_bed(request):
 @permission_classes([IsAuthenticated])
 def get_landlord_properties(request):
     """
-    API to fetch all properties for a landlord, including nested rooms & beds.
-    Expects POST with {'landlord_id': int}.
+    API to fetch all properties for a landlord, including nested rooms & beds,
+    plus for each bed a count of high_matches (>=40%) vs low_matches (<40%).
+    Returns:
+      {
+        "success": true,
+        "message": "...",
+        "data": {
+          "total_tenants": X,
+          "properties": [ ... ]
+        }
+      }
     """
     serializer = PropertyListRequestSerializer(data=request.data)
     if not serializer.is_valid():
@@ -1446,61 +1241,105 @@ def get_landlord_properties(request):
         )
     landlord_id = serializer.validated_data['landlord_id']
 
-    # Prefetch media, rooms, beds and select related country
-    properties_qs = (
+    # fetch all props w/ rooms & beds
+    props_qs = (
         LandlordPropertyDetailsModel.objects
-        .filter(landlord_id=landlord_id, is_active=True, is_deleted=False)
-        .select_related('property_city__state__country')
-        .prefetch_related(
+          .filter(landlord_id=landlord_id, is_active=True, is_deleted=False)
+          .select_related('property_city__state__country')
+          .prefetch_related(
             Prefetch(
-                'property_media',
-                queryset=LandlordPropertyMediaModel.objects.filter(is_active=True, is_deleted=False)
+              'property_media',
+              queryset=LandlordPropertyMediaModel.objects.filter(is_active=True, is_deleted=False)
             ),
             Prefetch(
-                'rooms',
-                queryset=LandlordPropertyRoomDetailsModel.objects
-                    .filter(is_deleted=False)
-                    .prefetch_related(
-                        Prefetch(
-                            'beds',
-                            queryset=LandlordRoomWiseBedModel.objects.filter(is_active=True, is_deleted=False)
-                        )
+              'rooms',
+              queryset=(
+                LandlordPropertyRoomDetailsModel.objects
+                  .filter(is_deleted=False)
+                  .prefetch_related(
+                    Prefetch(
+                      'beds',
+                      queryset=LandlordRoomWiseBedModel.objects
+                               .filter(is_active=True, is_deleted=False)
                     )
+                  )
+              )
             )
-        )
+          )
     )
 
+    all_tenant_ids = set()
     result = []
-    for prop in properties_qs:
+
+    for prop in props_qs:
+        city = prop.property_city
+        # gather tenants who prefer this city
+        tenants = TenantDetailsModel.objects.filter(
+            preferred_city=city,
+            is_active=True, is_deleted=False
+        )
+        # collect unique for global total
+        all_tenant_ids.update(tenants.values_list('id', flat=True))
+
+        # for fallback:
+        base_pref = LandlordBasePreferenceModel.objects.filter(
+            landlord_id=landlord_id
+        ).first()
+
         country = getattr(prop.property_city.state, 'country', None)
-        currency_symbol = country.currency_symbol if country and country.currency_symbol else (country.currency or '')
+        currency_symbol = (
+            country.currency_symbol
+            if country and country.currency_symbol
+            else (country.currency or '')
+        )
 
         rooms_data = []
-        for idx, room in enumerate(prop.rooms.all()):
+        for ridx, room in enumerate(prop.rooms.all()):
             beds_data = []
             for bed in room.beds.all():
+                # compute high/low counters
+                high = low = 0
+                for tenant in tenants:
+                    try:
+                        persona = TenantPersonalityDetailsModel.objects.get(
+                            tenant_id=tenant.id,
+                            is_active=True, is_deleted=False
+                        )
+                    except TenantPersonalityDetailsModel.DoesNotExist:
+                        persona = None
+
+                    # get this tenant’s answers or fallback
+                    lan = list(bed.tenant_preference_answers.all())
+                    if not lan and base_pref:
+                        lan = list(base_pref.answers.all())
+
+                    overall_match, _ = compute_personality_match(persona, lan)
+                    if overall_match >= 40:
+                        high += 1
+                    else:
+                        low += 1
+
                 period = "month" if bed.is_rent_monthly else "day"
                 bed_dict = {
                     "id": bed.id,
+                    "bed_number": f'{bed.room.room_name} Bed {bed.bed_number}',
                     "price": f"{currency_symbol} {bed.rent_amount} / {period}",
                     "type": "Private" if bed.is_rent_monthly else "Shared",
                     "is_rent_monthly": bed.is_rent_monthly,
+                    "availability_start_date": (
+                       bed.availability_start_date.isoformat()
+                       if bed.availability_start_date else None
+                    ),
+                    # now two explicit counts:
+                    "high_matches": high,
+                    "low_matches": low,
                 }
-                # only include these if the bed is active AND not deleted
-                if room.is_active :
-                    bed_dict["availability_start_date"] = (
-                        str(bed.availability_start_date.isoformat())
-                        if bed.availability_start_date else None
-                    )
-                    bed_dict["matches"] = "35 tenants match"
-
                 beds_data.append(bed_dict)
 
             rooms_data.append({
-                "label": room.room_name.strip() if room.room_name and room.room_name.strip()
-                         else f"Room {idx+1}",
+                "id": room.id,
+                "label": room.room_name.strip() or f"Room {ridx+1}",
                 "beds": beds_data,
-                "id": room.id
             })
 
         result.append({
@@ -1508,11 +1347,14 @@ def get_landlord_properties(request):
             "name": prop.property_name,
             "size": prop.property_size,
             "type": prop.property_type.type_name if prop.property_type else None,
-            "rooms": rooms_data
+            "rooms": rooms_data,
         })
 
     return Response(
-        ResponseData.success(result, "Properties fetched successfully"),
+        ResponseData.success({
+            "total_tenants": len(all_tenant_ids),
+            "properties": result
+        }, "Properties fetched successfully"),
         status=status.HTTP_200_OK
     )
 
@@ -1559,7 +1401,12 @@ def get_landlord_property_details(request):
             ResponseData.error("Property not found or inactive"),
             status=status.HTTP_404_NOT_FOUND
         )
-
+    country = getattr(property.property_city.state, 'country', None)
+    currency_symbol = (
+        country.currency_symbol
+        if country and country.currency_symbol
+        else (country.currency or '')
+    )
     # STEP 1: Fetch all active property types
     property_types = LandlordPropertyTypeModel.objects.filter(is_active=True, is_deleted=False)
     
@@ -1592,6 +1439,7 @@ def get_landlord_property_details(request):
     )
 
     response_data = response_serializer.data  # Get serialized data as a dictionary
+    response_data['currency_symbol'] = currency_symbol
     # ─── NEW: sort the rooms list by room “id” ───
     response_data['rooms'] = sorted(
         response_data.get('rooms', []),
@@ -1825,6 +1673,8 @@ def get_landlord_room_details(request):
         "number_of_beds":       room.number_of_beds,
         "number_of_windows":    room.number_of_windows,
         "max_people_allowed":   room.max_people_allowed,
+        "current_male_occupants":   room.current_male_occupants,
+        "current_female_occupants":   room.current_female_occupants,
         "floor":                room.floor,
         "is_active":            room.is_active,
         "room_media": [
@@ -1838,7 +1688,7 @@ def get_landlord_room_details(request):
         "beds": [
             {
                 "id":         b.id,
-                "bed_number": b.bed_number,
+                "bed_number": f'{b.room.room_name} Bed {b.bed_number}',
                 "is_active":  b.is_active,
                 "tenant_preference" : b.tenant_preference,
                 "price" : b.rent_amount,
@@ -1951,7 +1801,7 @@ def get_landlord_bed_details(request):
 
     data = {
         "id": bed.id,
-        "bed_number": bed.bed_number,
+        "bed_number": f'{bed.room.room_name} Bed {bed.bed_number}',
         "rent_amount": str(bed.rent_amount),
         "availability_start_date": (
             bed.availability_start_date.isoformat()

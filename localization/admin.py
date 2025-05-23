@@ -11,8 +11,8 @@ from .models import (
 @admin.register(CountryModel)
 class CountryModelAdmin(admin.ModelAdmin):
     list_display = (
-        'id', 'name', 'iso2', 'iso3', 'phonecode', 'capital',
-        'region', 'subregion'
+        'currency','id', 'name', 'iso2', 'iso3', 'phonecode', 'capital',
+        'region', 'subregion','amount'
     )
     search_fields = (
         'name', 'iso2', 'iso3', 'phonecode', 'capital',

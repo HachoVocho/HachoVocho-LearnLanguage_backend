@@ -103,7 +103,7 @@ class OTPModel(models.Model):
         ('tenant', 'Tenant'),
         ('landlord', 'Landlord'),
     ]
-    role_name = models.CharField(max_length=20, choices=ROLE_CHOICES, unique=True)
+    role_name = models.CharField(max_length=20, choices=ROLE_CHOICES, unique=False)
     phone_number = models.CharField(max_length=15, unique=True)
     otp = models.CharField(max_length=6)
     is_verified = models.BooleanField(default=False)

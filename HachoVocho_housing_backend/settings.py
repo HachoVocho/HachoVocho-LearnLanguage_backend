@@ -54,7 +54,9 @@ INSTALLED_APPS = [
     "landlord_availability",
     "appointments",
     "translations",
-    "rest_framework_simplejwt"
+    "rest_framework_simplejwt",
+    'support',
+    'core'
 ]
 
 MIDDLEWARE = [
@@ -180,10 +182,12 @@ CHANNEL_LAYERS = {
     },
 }
 
+REDIS_URL = "redis://127.0.0.1:6379/1"
+
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",  # Redis server URL
+        "LOCATION": REDIS_URL,  # Redis server URL
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
@@ -234,3 +238,6 @@ REST_FRAMEWORK = {
          'rest_framework.permissions.IsAuthenticated',
      ),
  }
+
+ONESIGNAL_REST_API_KEY = 'os_v2_app_lc5i5p3xhbc3dc3pjhg6motvf3hciag7fzyuuomaiusii54emsbmxb4nvgwhh6wgztlarsttqlvhoze3csml373yb3mkusw3pgcy7ga'
+ONESIGNAL_APP_ID = '58ba8ebf-7738-45b1-8b6f-49cde63a752e'

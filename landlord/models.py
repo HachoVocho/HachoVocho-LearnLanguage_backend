@@ -126,6 +126,16 @@ class LandlordPropertyRoomDetailsModel(models.Model):
         null=True,
         blank=True,
     )
+    current_male_occupants = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Number of male occupants",
+        help_text="Current number of male-identifying occupants"
+    )
+    current_female_occupants = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Number of female occupants", 
+        help_text="Current number of female-identifying occupants"
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
@@ -204,7 +214,17 @@ class LandlordRoomWiseBedModel(models.Model):
 
     def __str__(self):
         return f"Bed {self.room.number_of_beds} in {self.room}"
-
+    @property
+    def country(self):
+        """
+        Walk up:
+          bed → room → property → city → country
+        """
+        # self.room is a LandlordPropertyRoomDetailsModel
+        prop = self.room.property                    # LandlordPropertyDetailsModel
+        city = prop.property_city                    # CityModel
+        return city.state.country                          # CountryModel
+    
 class LandlordBedMediaModel(models.Model):
     bed = models.ForeignKey(LandlordRoomWiseBedModel, on_delete=models.CASCADE, related_name="bed_media")
     file = models.FileField(upload_to="bed_media/")

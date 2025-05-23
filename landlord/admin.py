@@ -84,7 +84,7 @@ class LandlordPropertyRoomTypeModelAdmin(admin.ModelAdmin):
 
 @admin.register(LandlordPropertyRoomDetailsModel)
 class LandlordPropertyRoomDetailsModelAdmin(admin.ModelAdmin):
-    list_display = ('id','property', 'room_size', 'room_type', 'number_of_beds', 'number_of_windows', 'max_people_allowed', 'floor')
+    list_display = ('current_female_occupants','current_male_occupants','id','property', 'room_size', 'room_type', 'number_of_beds', 'number_of_windows', 'max_people_allowed', 'floor')
     list_filter = ('is_active', 'is_deleted', 'created_at')
     search_fields = ('room_size',)
     readonly_fields = ('created_at', 'deleted_at')

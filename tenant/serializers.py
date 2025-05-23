@@ -129,26 +129,11 @@ class PropertyListRequestSerializer(serializers.Serializer):
         help_text="ID of the tenant"
     )
     city_id = serializers.IntegerField(
-        min_value=1,
+        min_value=-1,
         required=True,
         help_text="ID of the preferred city"
     )
 
-    def validate(self, attrs):
-        # Validate tenant exists
-        if not TenantDetailsModel.objects.filter(
-            id=attrs['tenant_id'], 
-            is_active=True
-        ).exists():
-            raise serializers.ValidationError("Invalid or inactive tenant")
-            
-        # Validate city exists
-        if not CityModel.objects.filter(
-            id=attrs['city_id'],
-        ).exists():
-            raise serializers.ValidationError("Invalid or inactive city")
-            
-        return attrs
     
 class PropertyDetailRequestSerializer(serializers.Serializer):
     property_id = serializers.IntegerField(required=True)

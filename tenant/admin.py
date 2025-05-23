@@ -16,16 +16,33 @@ from .models import (
 
 @admin.register(TenantDetailsModel)
 class TenantDetailsAdmin(admin.ModelAdmin):
-    list_display = ('id', 'first_name', 'last_name', 'email', 'is_active', 'created_at', 'phone_number')
-    search_fields = ('email', 'first_name', 'last_name')
-    list_filter = ('is_active', 'is_deleted')
+    list_display = (
+        'id','first_name','last_name','email','preferred_city',
+        'phone_number','is_active','created_at'
+    )
+    list_filter = ('is_active','is_deleted')
+    search_fields = ('email','first_name','last_name')
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "preferred_city":
-            # Limit the queryset to only 10 entries.
-            kwargs["queryset"] = CityModel.objects.all()[:10]
+            # Grab the first 10 for browsing…
+            base_qs = CityModel.objects.all()[:10]
+
+            # But if we’re editing an existing Tenant, make sure their city is included
+            obj_id = request.resolver_match.kwargs.get('object_id')
+            if obj_id:
+                try:
+                    tenant = TenantDetailsModel.objects.get(pk=obj_id)
+                    if tenant.preferred_city_id:
+                        base_qs = CityModel.objects.filter(
+                            pk=tenant.preferred_city_id
+                        ).union(base_qs)
+                except TenantDetailsModel.DoesNotExist:
+                    pass
+
+            kwargs["queryset"] = base_qs
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
-    
+
 @admin.register(TenantEmailVerificationModel)
 class TenantEmailVerificationModelAdmin(admin.ModelAdmin):
     list_display = ('tenant', 'otp', 'is_verified')
