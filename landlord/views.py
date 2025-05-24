@@ -12,7 +12,7 @@ from notifications.models import TenantDeviceNotificationModel
 from notifications.send_notifications import send_onesignal_notification
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from response import Response as ResponseData
-from tenant.views import send_otp_email
+from user.email_utils import send_otp_email
 from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
 from translations.models import LanguageModel
 from user.authentication import EnhancedJWTValidation

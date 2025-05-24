@@ -1,7 +1,6 @@
 from datetime import datetime
 import os
 import re
-from django.forms import ValidationError
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -15,6 +14,7 @@ from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, L
 from payments.models import TenantPaymentModel
 from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
 from translations.models import LanguageModel
+from user.email_utils import send_otp_email
 from .serializers import PropertyDetailRequestSerializer
 from localization.models import CityModel, CountryModel
 from .serializers import AddIdentityDocumentSerializer, TenantDocumentTypeSerializer, TenantIdentityDocumentSerializer, TenantIdentityDocumentUpdateSerializer, TenantPreferenceAnswerSerializer, TenantPreferenceQuestionsAnswersRequestSerializer, TenantProfileRequestSerializer, TenantQuestionSerializer, TenantSignupSerializer
@@ -22,7 +22,7 @@ from response import Response as ResponseData
 from user.authentication import EnhancedJWTValidation
 from rest_framework.permissions import IsAuthenticated
 from .models import TenantDetailsModel, TenantDocumentTypeModel, TenantEmailVerificationModel, TenantIdentityVerificationFile, TenantIdentityVerificationModel, TenantPersonalityDetailsModel, TenantPreferenceAnswerModel, TenantPreferenceOptionModel, TenantPreferenceQuestionModel
-from django.core.mail import send_mail
+
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
@@ -177,20 +177,6 @@ def tenant_signup(request):
             ResponseData.error(str(e)),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
-
-def send_otp_email(email, otp):
-    """Helper function to send OTP email"""
-    try:
-        send_mail(
-            subject='Verify Your Email',
-            message=f'Your OTP for email verification is: {otp}',
-            from_email=None,  # Uses DEFAULT_FROM_EMAIL in settings.py
-            recipient_list=[email],
-            fail_silently=False,  # Raise error if email fails
-        )
-    except Exception as e:
-        raise ValidationError(f"Failed to send email: {str(e)}")
     
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
