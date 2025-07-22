@@ -1,4 +1,5 @@
 import random
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 import boto3
 from django.utils.timezone import now, timedelta
 from rest_framework.decorators import api_view
@@ -7,7 +8,7 @@ from rest_framework import status
 from landlord.models import LandlordDetailsModel, LandlordEmailVerificationModel
 from tenant.models import TenantDetailsModel, TenantEmailVerificationModel
 from tenant.views import send_otp_email
-from rest_framework_simplejwt.exceptions import InvalidToken
+from rest_framework_simplejwt.exceptions import InvalidToken,ExpiredTokenError
 from rest_framework_simplejwt.tokens import UntypedToken
 
 from user.jwt_utils import get_tokens_for_user, refresh_access_token
@@ -256,47 +257,43 @@ def refresh_token(request):
     """Secure token refresh with validation"""
     print("\n[Token Refresh] === Starting token refresh process ===")
     try:
-        refresh_token = request.data.get('refresh')
+        refresh_token_str = request.data.get('refresh')
         print(f"[Token Refresh] Incoming request data: {request.data}")
 
-        if not refresh_token:
+        if not refresh_token_str:
             print("[Token Refresh] ❌ Error: No refresh token provided")
             return Response(
                 ResponseData.error("Refresh token is required"),
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # decode & validate token claims
+        # Validate refresh token and get payload
         try:
-            print("[Token Refresh] Decoding token...")
-            untyped = UntypedToken(refresh_token)
-            payload = untyped.payload
-            print(f"[Token Refresh] Token payload: {payload}")
-        except InvalidToken as e:
-            print(f"[Token Refresh] ❌ InvalidToken error: {e}")
+            print("[Token Refresh] Validating refresh token...")
+            refresh = RefreshToken(refresh_token_str)
+            payload = refresh.payload
+        except TokenError as e:
+            print(f"[Token Refresh] ❌ Token error: {e}")
             return Response(
-                ResponseData.error("Invalid refresh token"),
+                ResponseData.error("Invalid or expired refresh token"),
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        user_id    = payload.get('user_id')
-        user_type  = (payload.get('user_type') or "").lower()
-        email      = payload.get('email')
-        token_pw   = payload.get('pw_hash')
+        # Extract claims
+        user_id = payload.get('user_id')
+        user_type = (payload.get('user_type') or "").lower()
+        email = payload.get('email')
+        token_pw = payload.get('pw_hash')
 
         print(f"[Token Refresh] Extracted claims - user_id: {user_id}, user_type: {user_type}, email: {email}, pw_hash: {token_pw!r}")
 
-        # lookup active user
+        # Lookup user
         if user_type == 'tenant':
             print("[Token Refresh] Looking up tenant user...")
-            user = TenantDetailsModel.objects.filter(
-                id=user_id, email=email, is_active=True
-            ).first()
+            user = TenantDetailsModel.objects.filter(id=user_id, email=email, is_active=True).first()
         else:
             print("[Token Refresh] Looking up landlord user...")
-            user = LandlordDetailsModel.objects.filter(
-                id=user_id, email=email, is_active=True
-            ).first()
+            user = LandlordDetailsModel.objects.filter(id=user_id, email=email, is_active=True).first()
 
         if not user:
             print("[Token Refresh] ❌ Error: User not found or inactive")
@@ -304,26 +301,28 @@ def refresh_token(request):
                 ResponseData.error("User not found"),
                 status=status.HTTP_401_UNAUTHORIZED
             )
+
         print(f"[Token Refresh] Found active user: {user}")
 
-        # compare password‐hash fragments
+        # Compare password hash
         if hasattr(user, 'has_usable_password') and user.has_usable_password():
             current_pw_fragment = user.password[:15]
         else:
             current_pw_fragment = ''
-        print(f"[Token Refresh] Password check - Current fragment: {current_pw_fragment!r}, Token fragment: {token_pw!r}")
 
+        print(f"[Token Refresh] Password check - Current: {current_pw_fragment!r}, Token: {token_pw!r}")
         if token_pw != current_pw_fragment:
-            print("[Token Refresh] ❌ Error: Password version mismatch")
+            print("[Token Refresh] ❌ Error: Password changed")
             return Response(
                 ResponseData.error("Password changed - please login again"),
                 status=status.HTTP_401_UNAUTHORIZED
             )
+
         print("[Token Refresh] ✅ Password version validated")
 
-        # rotate tokens
+        # Rotate tokens
         print("[Token Refresh] Generating new tokens...")
-        result = refresh_access_token(refresh_token)
+        result = refresh_access_token(refresh_token_str)
         if 'error' in result:
             print(f"[Token Refresh] ❌ Refresh error: {result['error']}")
             return Response(
@@ -333,7 +332,7 @@ def refresh_token(request):
 
         print(f"[Token Refresh] ✅ Successfully generated new tokens. Result: {result}")
         return Response(
-            ResponseData.success(data=result,message='Refresh token generated'),
+            ResponseData.success(data=result, message='Refresh token generated'),
             status=status.HTTP_200_OK
         )
 
@@ -341,10 +340,9 @@ def refresh_token(request):
         print(f"[Token Refresh] ❌ Unexpected error: {e}")
         import traceback; traceback.print_exc()
         return Response(
-            ResponseData.error(str(e)),
+            ResponseData.error("Internal server error"),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
     finally:
         print("[Token Refresh] === Refresh process completed ===\n")
         

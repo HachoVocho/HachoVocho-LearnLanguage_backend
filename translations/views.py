@@ -17,8 +17,8 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 
 @api_view(["POST"])
-@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+#@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([AllowAny])
 def add_translation(request):
     """
     API endpoint to add one or multiple translations and automatically translate to all languages.
@@ -112,7 +112,7 @@ def add_translation(request):
 
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def get_translations(request):
     """
     API endpoint to fetch translations for a specific language code.
@@ -121,6 +121,7 @@ def get_translations(request):
         "language_code": "en"
     }
     """
+    print(f'request.datadd {request.data}')
     language_code = request.data.get('language_code')
     if not language_code:
         return Response({
@@ -195,7 +196,7 @@ def add_language(request):
 
 
 @api_view(['POST'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
+@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
 @permission_classes([AllowAny])
 def get_languages(request):
     """
@@ -208,29 +209,37 @@ def get_languages(request):
         if data is None:
             languages = LanguageModel.objects.all()
             data = LanguageSerializer(languages, many=True).data
-            cache.set(cache_key, data, 60*60)
+            cache.set(cache_key, data, 60 * 60)
 
         # Enrich translations
         for lang in data:
             t = TranslationModel.objects.filter(
-                language_id=lang["id"], 
+                language_id=lang["id"],
                 key="helloLabel"
             ).first()
             lang["hello"] = t.value if t else "Hello"
+
         # Handle authenticated users
         user = getattr(request, 'user', None)
         pref_code = None
-        
+
         if user and user.is_authenticated:
             try:
-                if hasattr(user, 'tenantdetailsmodel'):
-                    pref = user.tenantdetailsmodel.preferred_language
-                elif hasattr(user, 'landlorddetailsmodel'):
-                    pref = user.landlorddetailsmodel.preferred_language
-                
-                pref_code = pref.code if pref and hasattr(pref, 'code') else None
+                user_email = user.email
+
+                # Check if user is a tenant
+                tenant = TenantDetailsModel.objects.filter(email=user_email).first()
+                if tenant and tenant.preferred_language:
+                    pref_code = tenant.preferred_language.code
+
+                # Check if user is a landlord (if tenant not found or no lang)
+                if not pref_code:
+                    landlord = LandlordDetailsModel.objects.filter(email=user_email).first()
+                    if landlord and landlord.preferred_language:
+                        pref_code = landlord.preferred_language.code
+
             except Exception as e:
-                print(f"Error getting preferred language: {e}")
+                print(f"Error determining preferred language: {e}")
 
         return Response({
             "success": True,
@@ -244,7 +253,6 @@ def get_languages(request):
             "success": False,
             "error": str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
         
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
@@ -303,6 +311,7 @@ def set_landlord_language(request):
       "language_code": "en"
     }
     """
+    print(f'request.datadd {request.data}')
     serializer = LandlordLanguageUpdateSerializer(data=request.data)
     if not serializer.is_valid():
         return Response({

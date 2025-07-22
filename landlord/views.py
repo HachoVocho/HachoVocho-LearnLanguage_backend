@@ -8,7 +8,6 @@ from rest_framework.decorators import api_view,parser_classes
 from rest_framework.response import Response
 from rest_framework import status
 from localization.models import CityModel, CountryModel
-from notifications.models import TenantDeviceNotificationModel
 from notifications.send_notifications import send_onesignal_notification
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from response import Response as ResponseData
@@ -35,7 +34,6 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
 
 PENDING_OR_ACCEPTED = ["pending", "accepted"]
