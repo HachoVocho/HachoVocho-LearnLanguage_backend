@@ -11,8 +11,8 @@ from user.fetch_match_details import compute_personality_match
 from user.refresh_count_for_groups import refresh_counts_for_groups
 from user.ws_auth import authenticate_websocket
 from asgiref.sync import sync_to_async
-
-from .models import AppointmentBookingModel
+from django.db import transaction
+from .models import AppointmentBookingModel, AppointmentStatusModel
 from landlord.models import LandlordBasePreferenceModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilitySlotModel, LandlordAvailabilityModel
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
@@ -48,32 +48,65 @@ async def is_group_empty(group: str) -> bool:
     return members == 0
 
 class AppointmentRepository:
+    
     @staticmethod
     @database_sync_to_async
-    def confirm_appointment(appt,last_updated_by):
-        appt.status = "confirmed"
-        appt.last_updated_by = last_updated_by
-        appt.updated_at = timezone.now()
-        appt.save()
+    def confirm_appointment(appt, last_updated_by):
+        try:
+            with transaction.atomic():
+                # reload with lock to avoid concurrent modifications
+                appt = AppointmentBookingModel.objects.select_for_update() \
+                    .select_related("status", "bed__room__property__landlord", "tenant") \
+                    .get(pk=appt.pk)
 
-        return {
-            "appointmentId": appt.id,
-            "status": appt.status,
-            "tenantId": appt.tenant.id,
-            "roomId": appt.bed.room.id,
-            'landlordFirstName' : appt.bed.room.property.landlord.first_name,
-            'landlordLastName' : appt.bed.room.property.landlord.last_name,
-            'slot_id' : appt.time_slot.id
-        }
+                current_code = appt.status.code
+
+                if current_code != "pending":
+                    if current_code == "cancelled":
+                        return {
+                            "error": "Appointment was cancelled by tenant.",
+                            "appointmentId": appt.id,
+                            "status": current_code,
+                        }
+                    else:
+                        return {
+                            "error": f"Cannot confirm appointment because it's in '{current_code}' state.",
+                            "appointmentId": appt.id,
+                            "status": current_code,
+                        }
+
+                confirmed_status = AppointmentStatusModel.objects.get(code="confirmed")
+                appt.status = confirmed_status
+                appt.last_updated_by = last_updated_by
+                appt.updated_at = timezone.now()
+                appt.save()
+
+            # success payload
+            return {
+                "appointmentId": appt.id,
+                "status": appt.status.code,
+                "tenantId": appt.tenant.id,
+                "roomId": appt.bed.room.id,
+                "landlordFirstName": appt.bed.room.property.landlord.first_name,
+                "landlordLastName": appt.bed.room.property.landlord.last_name,
+                "slot_id": appt.time_slot.id,
+            }
+
+        except AppointmentBookingModel.DoesNotExist:
+            return {"error": "Appointment not found."}
+        except AppointmentStatusModel.DoesNotExist:
+            return {"error": "Confirmed status is not configured."}
+
 
     @staticmethod
     @database_sync_to_async
     def fetch_tenant_appointments(tenant_id, filters=None):
+        status = AppointmentStatusModel.objects.get(code='cancelled')
         qs = AppointmentBookingModel.objects.filter(
             tenant_id=tenant_id,
             is_active=True,
             is_deleted=False
-        ).exclude(status='cancelled', initiated_by='tenant')
+        ).exclude(status=status, initiated_by='tenant')
         now = timezone.now()
         if filters:
             status = filters.get("status")
@@ -124,7 +157,7 @@ class AppointmentRepository:
             print(f'now {now}')
             print(f'appt.status {appt.status}')
             # ➋ If it’s past, and still “confirmed”, mark completed:
-            if now > end_dt and appt.status == "confirmed":
+            if now > end_dt and appt.status.code == "confirmed":
                 print('sdvsvvsv')
                 appt.status = "completed"
                 appt.save(update_fields=["status"])
@@ -170,7 +203,7 @@ class AppointmentRepository:
                 "startTime": slot.start_time.strftime("%H:%M"),
                 "endTime": slot.end_time.strftime("%H:%M"),
                 "slotId": slot.id,
-                "status": appt.status,
+                "status": appt.status.code,
                 "createdAt": appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "initiatedBy": appt.initiated_by,
                 'lastUpdatedBy' : appt.last_updated_by,
@@ -265,7 +298,7 @@ class AppointmentRepository:
             print(f'now {now}')
             print(f'appt.status {appt.status}')
             # ➋ If it’s past, and still “confirmed”, mark completed:
-            if now > end_dt and appt.status == "confirmed":
+            if now > end_dt and appt.status.code == "confirmed":
                 print('sdvsvvsv')
                 appt.status = "completed"
                 appt.save(update_fields=["status"])
@@ -292,7 +325,7 @@ class AppointmentRepository:
                 "date":            slot.availability.date.strftime("%Y-%m-%d"),
                 "startTime":       slot.start_time.strftime("%H:%M"),
                 "endTime":         slot.end_time.strftime("%H:%M"),
-                "status":          appt.status,
+                "status":          appt.status.code,
                 "slotId":          slot.id,
                 "initiatedBy":     appt.initiated_by,
                 "lastUpdatedBy":   appt.last_updated_by,
@@ -309,31 +342,60 @@ class AppointmentRepository:
 
     @staticmethod
     @database_sync_to_async
-    def create_appointment(tenant_id, bed_id, slot_id, landlord_id,initiated_by):
-        tenant = TenantDetailsModel.objects.get(id=tenant_id)
-        bed = LandlordRoomWiseBedModel.objects.get(id=bed_id)
-        landlord = LandlordDetailsModel.objects.get(id=landlord_id)
-        timeslot = LandlordAvailabilitySlotModel.objects.get(id=slot_id)
+    def create_appointment(tenant_id, bed_id, slot_id, landlord_id, initiated_by):
+        try:
+            with transaction.atomic():
+                # Lock the timeslot row so concurrent creations for the same slot serialize here
+                timeslot = LandlordAvailabilitySlotModel.objects.select_for_update().get(id=slot_id)
 
-        appt = AppointmentBookingModel.objects.create(
-            tenant=tenant,
-            landlord=landlord,
-            bed=bed,
-            time_slot=timeslot,
-            status="pending",
-            initiated_by=initiated_by
-        )
+                # Fetch the "confirmed" and "pending" statuses
+                confirmed_status = AppointmentStatusModel.objects.get(code="confirmed")
+                pending_status = AppointmentStatusModel.objects.get(code="pending")
 
-        return {
-            "appointment_id": appt.id,
-            "tenant_id": tenant_id,
-            "bed_id": bed_id,
-            "slot_id": slot_id,
-            "start_time": timeslot.start_time.strftime('%H:%M'),
-            "end_time": timeslot.end_time.strftime('%H:%M'),
-            "status": appt.status,
-            'propertyId' : appt.bed.room.property.id
-        }
+                # If there's already a confirmed appointment on this timeslot, reject
+                if AppointmentBookingModel.objects.filter(time_slot=timeslot, status=confirmed_status).exists():
+                    return {
+                        "error": "Time slot already booked (confirmed appointment exists).",
+                        "slot_id": slot_id,
+                    }
+
+                # Fetch other related objects (you can lock if necessary)
+                tenant = TenantDetailsModel.objects.get(id=tenant_id)
+                bed = LandlordRoomWiseBedModel.objects.get(id=bed_id)
+                landlord = LandlordDetailsModel.objects.get(id=landlord_id)
+
+                # Create new appointment in pending state
+                appt = AppointmentBookingModel.objects.create(
+                    tenant=tenant,
+                    landlord=landlord,
+                    bed=bed,
+                    time_slot=timeslot,
+                    status=pending_status,
+                    initiated_by=initiated_by,
+                )
+
+            # Outside transaction: build response payload
+            return {
+                "appointment_id": appt.id,
+                "tenant_id": tenant_id,
+                "bed_id": bed_id,
+                "slot_id": slot_id,
+                "start_time": timeslot.start_time.strftime("%H:%M"),
+                "end_time": timeslot.end_time.strftime("%H:%M"),
+                "status": appt.status.code,
+                "propertyId": appt.bed.room.property.id,
+            }
+
+        except LandlordAvailabilitySlotModel.DoesNotExist:
+            return {"error": "Invalid time slot ID.", "slot_id": slot_id}
+        except TenantDetailsModel.DoesNotExist:
+            return {"error": "Invalid tenant ID.", "tenant_id": tenant_id}
+        except LandlordRoomWiseBedModel.DoesNotExist:
+            return {"error": "Invalid bed ID.", "bed_id": bed_id}
+        except LandlordDetailsModel.DoesNotExist:
+            return {"error": "Invalid landlord ID.", "landlord_id": landlord_id}
+        except AppointmentStatusModel.DoesNotExist:
+            return {"error": "Appointment status configuration missing (pending/confirmed)."}
 
     @staticmethod
     @database_sync_to_async
@@ -368,7 +430,7 @@ class AppointmentRepository:
             "startTime": slot.start_time.strftime("%H:%M"),
             "endTime": slot.end_time.strftime("%H:%M"),
             "slotId": slot.id,
-            "status": appt.status,
+            "status": appt.status.code,
             "initiatedBy": appt.initiated_by,
             "createdAt": appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "propertyName": room.property.property_name if room.property else "",
@@ -397,6 +459,7 @@ class AppointmentRepository:
 
         out = []
         for av in qs:
+            status = AppointmentStatusModel.objects.get(code='confirmed')
             # filter out slots that are inactive, deleted, or already CONFIRMED
             slots = (
                 av.time_slots.filter(
@@ -404,7 +467,7 @@ class AppointmentRepository:
                     is_deleted=False,
                 )
                 .exclude(
-                    slot_appointments__status='confirmed'
+                    slot_appointments__status=status
                 )
             )
 
@@ -436,14 +499,15 @@ class AppointmentRepository:
     @staticmethod
     @database_sync_to_async
     def cancel_appointment(appt,last_updated_by):
-        appt.status = "cancelled"
+        status = AppointmentStatusModel.objects.get(code='cancelled')
+        appt.status = status
         appt.last_updated_by = last_updated_by
         appt.updated_at = timezone.now()
         appt.save()
 
         return {
             "appointmentId": appt.id,
-            "status": appt.status,
+            "status": appt.status.code,
             "tenantId": appt.tenant.id,
             "roomId": appt.bed.room.id,
             "landlordId" : appt.landlord.id,
@@ -463,13 +527,14 @@ class AppointmentRepository:
         appt = AppointmentBookingModel.objects.get(
             id=appt_id, is_active=True, is_deleted=False
         )
-        appt.status = "declined"
+        status = AppointmentStatusModel.objects.get(code='declined')
+        appt.status = status
         appt.last_updated_by = last_updated_by
         appt.updated_at = timezone.now()
         appt.save()
         return {
             "appointmentId": appt.id,
-            "status": appt.status,
+            "status": appt.status.code,
             "tenantId": appt.tenant.id,
             "roomId": appt.bed.room.id,
             'tenantFirstName' : appt.tenant.first_name,
@@ -487,13 +552,14 @@ class AppointmentRepository:
             id=slot_id, is_active=True, is_deleted=False
         )
         appt.time_slot = slot
-        appt.status = "pending"
+        status = AppointmentStatusModel.objects.get(code='pending')
+        appt.status = status
         appt.last_updated_by = last_updated_by
         appt.updated_at = timezone.now()
         appt.save()
         return {
             "appointmentId": appt.id,
-            "status": appt.status,
+            "status": appt.status.code,
             "tenantId": appt.tenant.id,
             "roomId": appt.bed.room.id,
             "slotId": slot.id,
@@ -804,11 +870,17 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
             result = await AppointmentRepository.create_appointment(
                 tenant_id, bed_id, slot_id, landlord_id, 'landlord'
             )
-            await self.send_json({
-                "status": "success",
-                "action": "appointment_booking_request_created_by_landlord",
-                "message": result,
-            })
+            if 'error' in result:
+                await self.send_json({
+                    "status": "failure",
+                    "message": result,
+                })
+            else:
+                await self.send_json({
+                    "status": "success",
+                    "action": "appointment_booking_request_created_by_landlord",
+                    "message": result,
+                })
 
         # ─── DETAILS ─────────────────────────────────────────────
         elif action == "get_appointment_details":
@@ -937,6 +1009,12 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
                 })
             appt = await get_appt(id=appt_id, is_active=True, is_deleted=False)
             res = await AppointmentRepository.confirm_appointment(appt, 'landlord')
+            if 'error' in res:
+                await self.send_json({
+                    "action": "appointment_cancelled_by_tenant",
+                    "data": res
+                })
+                return
             print(f"tenant_{res['tenantId']}")
             print(f"tenant_{res['tenantId']}_room_{res['roomId']}")
             print(f'self.channel_layerdc {self.channel_layer}')
@@ -956,7 +1034,7 @@ class LandlordAppointmentConsumer(AsyncWebsocketConsumer):
                 tenant_ids=[res['tenantId']],
                 headings={"en": "Appointment Confirmation"},
                 contents={"en": f"Landlord {res['landlordFirstName']} {res['landlordLastName']} confirmed your appointment between {res['slot_id']} "},
-                data={"appointment_id": appt.id, "type": "tenant_appointment"},
+                data={"result": res, "type": "tenant_appointment"},
                 )
             await self.send_json({
                 "action": "confirm_appointment_by_landlord",

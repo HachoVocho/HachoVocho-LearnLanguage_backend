@@ -10,7 +10,7 @@ from landlord.models import LandlordRoomWiseBedModel
 # Make sure to import AppointmentBookingModel from the correct app:
 from tenant.models import TenantDetailsModel  # if AppointmentBookingModel is in the tenant app
 from landlord_availability.models import LandlordAvailabilitySlotModel
-from appointments.models import AppointmentBookingModel  # update 'your_app' to the actual app name
+from appointments.models import AppointmentBookingModel, AppointmentStatusModel  # update 'your_app' to the actual app name
 from django.db.models import Q
 from django.utils.timezone import now
 from django.contrib.auth.models import AnonymousUser
@@ -205,7 +205,8 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
         except AppointmentBookingModel.DoesNotExist:
             raise Exception(f"Appointment {appointment_id} not found")
 
-        appt.status = 'confirmed'
+        status = AppointmentStatusModel.objects.get(code='confirmed')
+        appt.status = status
         appt.updated_at = now()
         appt.save()
 
@@ -229,8 +230,8 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
             )
         except AppointmentBookingModel.DoesNotExist:
             raise Exception(f"Appointment {appointment_id} not found")
-
-        appointment.status = 'cancelled'
+        status = AppointmentStatusModel.objects.get(code='cancelled')
+        appointment.status = status
         appointment.updated_at = now()
         appointment.save()
 
@@ -338,15 +339,17 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
         except TenantDetailsModel.DoesNotExist:
             raise Exception("Tenant not found")
 
+        status = AppointmentStatusModel.objects.get(code='cancelled')
         AppointmentBookingModel.objects.filter(
             Q(tenant=tenant, bed=bed) |
             Q(landlord=landlord, bed=bed),
             is_active=True,
             is_deleted=False, 
         ).update(
-            status='cancelled',
+            status=status,
             updated_at=now()
         )
+        status = AppointmentStatusModel.objects.get(code='pending')
         # Create the appointment booking record
         appointment = AppointmentBookingModel.objects.create(
             tenant=tenant,
@@ -354,7 +357,7 @@ class LandlordAvailabilityConsumer(AsyncWebsocketConsumer):
             bed=bed,
             time_slot=slot,
             initiated_by='tenant',
-            status="pending"
+            status=status
         )
         return {
             "appointment_id": appointment.id,

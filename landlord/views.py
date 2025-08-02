@@ -3,15 +3,20 @@ import json
 import os
 import re
 import shutil
+from parler.utils.context import switch_language
 from typing import Any, Dict, List
 from rest_framework.decorators import api_view,parser_classes
 from rest_framework.response import Response
 from rest_framework import status
+from parler.models import TranslatableModel, TranslatedFieldsModelMixin
+from interest_requests.models import InterestRequestStatusModel
 from localization.models import CityModel, CountryModel
 from notifications.send_notifications import send_onesignal_notification
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from response import Response as ResponseData
 from user.email_utils import send_otp_email
+from parler.models import TranslatableModel
+from django.utils.translation import get_language
 from translation_utils import DEFAULT_LANGUAGE_CODE, get_translation
 from translations.models import LanguageModel
 from user.authentication import EnhancedJWTValidation
@@ -36,9 +41,9 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated
 
-PENDING_OR_ACCEPTED = ["pending", "accepted"]
+PENDING_OR_ACCEPTED = InterestRequestStatusModel.objects.filter(code__in=['pending', 'accepted']).values_list('id', flat=True)
 @api_view(["POST"])
-@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+#@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
 @permission_classes([AllowAny])
 def landlord_signup(request):
     """API to handle landlord signup"""
@@ -60,7 +65,13 @@ def landlord_signup(request):
                     ResponseData.error(message),
                     status=status.HTTP_200_OK
                 )
-
+            tenant = TenantDetailsModel.objects.filter(email=email, is_active=True).first()
+            if tenant is not None:
+                message = get_translation("ERR_EMAIL_EXISTS_FOR_TENANT", language_code)
+                return Response(
+                    ResponseData.error(message),
+                    status=status.HTTP_200_OK
+                )
             # Try to get language for the tenant from the request if provided
             preferred_language = None
             try:
@@ -135,6 +146,7 @@ def landlord_signup(request):
                     # If no password is provided, create tenant as active directly.
                     if preferred_language:
                         validated_data['preferred_language'] = preferred_language
+                    validated_data['is_google_account'] = True
                     landlord = LandlordDetailsModel.objects.create(**validated_data, is_active=True)
                     message = get_translation("SUCC_LANDLORD_SIGNUP", language_code)
                     tokens = get_tokens_for_user(landlord)
@@ -159,6 +171,7 @@ def landlord_signup(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
 @permission_classes([IsAuthenticated])
@@ -178,6 +191,10 @@ def get_preference_questions(request):
     landlord = LandlordDetailsModel.objects.filter(
         id=landlord_id, is_active=True, is_deleted=False
     ).first()
+    lang = 'de'
+    if landlord.preferred_language is not None:
+        lang = landlord.preferred_language.code
+
     if not landlord:
         return Response(
             ResponseData.error("Invalid landlord"),
@@ -192,7 +209,7 @@ def get_preference_questions(request):
     }
 
     # 3) build bed_map unchanged
-    bed_map: Dict[int, List[Dict[str,int]]] = {}
+    bed_map: Dict[int, List[Dict[str, int]]] = {}
     if bed_id is not None:
         bed_qs = LandlordRoomWiseBedModel.objects.filter(id=bed_id).first()
         if bed_qs:
@@ -203,7 +220,7 @@ def get_preference_questions(request):
                 })
 
     # 4) build base_map only if use_base (unchanged)
-    base_map: Dict[int, List[Dict[str,int]]] = {}
+    base_map: Dict[int, List[Dict[str, int]]] = {}
     if use_base:
         base = LandlordBasePreferenceModel.objects.filter(landlord=landlord).first()
         if base:
@@ -222,36 +239,83 @@ def get_preference_questions(request):
     # 5) compute flag from bed_map OR base_all
     is_preference_found = bool(bed_map) or bool(base_all)
 
-    # 6) fetch questions + build response exactly as before...
-    questions = LandlordQuestionModel.objects.filter(
-        is_active=True, is_deleted=False
-    ).select_related("question_type", "content_type")
+    # helper to see if a model has a field
+    def has_field(model, name):
+        return any(f.name == name for f in model._meta.get_fields())
 
-    response: List[Dict[str,Any]] = []
+    # 6) fetch questions + build response with language applied
+    questions = LandlordQuestionModel.objects.all().select_related("question_type", "content_type")
+    response: List[Dict[str, Any]] = []
     for q in questions:
+        # filter question by its translation flags if present
+        include_question = True
+        if isinstance(q, TranslatableModel):
+            try:
+                trans = q.get_translation(lang, fallback=True)
+                if hasattr(trans, "is_active") and not trans.is_active:
+                    include_question = False
+                if hasattr(trans, "is_deleted") and trans.is_deleted:
+                    include_question = False
+            except Exception:
+                pass  # fallback allowed
+
+        if not include_question:
+            continue
+
+        question_text = q.safe_translation_getter("title", language_code=lang, any_language=True) or ""
+
         qd = {
             "id": q.id,
-            "question_text": q.question_text,
+            "question_text": question_text,
             "question_type": {
                 "id":   q.question_type.id,
-                "type_name": q.question_type.type_name,
-                "description": q.question_type.description,
+                "type_name": getattr(q.question_type, 'type_name', None),
+                "description": getattr(q.question_type, 'description', None),
             },
             "question_options": [],
             "answers": []
         }
 
-        # build options (unchanged)…
-        if q.content_type:
-            model = q.content_type.model_class()
-            if model is not None:
-                opts = [
-                  {"id": o.id, "option_text": getattr(o, "title", str(o))}
-                  for o in model.objects.filter(is_active=True, is_deleted=False)
-                ]
-                qd["question_options"] = opts
+        opts: List[Dict[str, Any]] = []
 
-        # select answers exactly as before (client_map → bed_map → base_map)
+        # 1. Explicit options on the question (LandlordOptionModel)
+        explicit_options_qs = q.options.filter(is_active=True, is_deleted=False)
+        if explicit_options_qs.exists():
+            for o in explicit_options_qs:
+                display = o.safe_translation_getter("title", language_code=lang, any_language=True) or str(o)
+                opts.append({"id": o.id, "option_text": display})
+        # 2. Fallback to content_type-driven options
+        elif q.content_type:
+            model_cls = q.content_type.model_class()
+            if model_cls is not None:
+                # Parler master model (has its own active/deleted on master)
+                if issubclass(model_cls, TranslatableModel):
+                    filter_kwargs = {}
+                    if has_field(model_cls, "is_active"):
+                        filter_kwargs["is_active"] = True
+                    if has_field(model_cls, "is_deleted"):
+                        filter_kwargs["is_deleted"] = False
+                    for o in model_cls.objects.filter(**filter_kwargs):
+                        display = (
+                            o.safe_translation_getter("title", language_code=lang, any_language=True)
+                            or o.safe_translation_getter("name", language_code=lang, any_language=True)
+                            or str(o)
+                        )
+                        opts.append({"id": o.id, "option_text": display})
+                else:
+                    # Regular model
+                    filter_kwargs = {}
+                    if has_field(model_cls, "is_active"):
+                        filter_kwargs["is_active"] = True
+                    if has_field(model_cls, "is_deleted"):
+                        filter_kwargs["is_deleted"] = False
+                    for o in model_cls.objects.filter(**filter_kwargs):
+                        title = getattr(o, 'title', None) or getattr(o, 'name', None) or str(o)
+                        opts.append({"id": o.id, "option_text": title})
+
+        qd["question_options"] = opts
+
+        # select answers (client_map → bed_map → base_map)
         if q.id in client_map:
             payload = client_map[q.id]
             for idx, opt_id in enumerate(payload.get("priority_order", []), start=1):
@@ -271,14 +335,13 @@ def get_preference_questions(request):
     return Response(
         ResponseData.success(
             {
-              "questions": response,
-              "isPreferenceFound": is_preference_found
+                "questions": response,
+                "isPreferenceFound": is_preference_found
             },
             "Preferences fetched"
         ),
         status=status.HTTP_200_OK
     )
-
 
 
 
@@ -501,11 +564,32 @@ def add_landlord_property_details(request):
     except LandlordDetailsModel.DoesNotExist:
         return Response({"status": "error", "message": "Invalid landlord or inactive/deleted."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 3) Validate property type
-    try:
-        prop_type = LandlordPropertyTypeModel.objects.get(type_name=property_type_name, is_active=True, is_deleted=False)
-    except LandlordPropertyTypeModel.DoesNotExist:
-        return Response({"status": "error", "message": "Invalid propertyType ID."}, status=status.HTTP_400_BAD_REQUEST)
+    # determine landlord preferred language (fallback to default if missing)
+    lang = getattr(landlord, "preferred_language", None)
+    if lang:
+        lang_code = lang.code.split("-")[0].lower()
+    else:
+        lang_code = settings.LANGUAGE_CODE.split("-")[0].lower()
+
+    prop_type = None
+    if property_type_name:
+        # First try matching in landlord's preferred language
+        prop_type = (
+            LandlordPropertyTypeModel.objects.language(lang_code)
+            .filter(translations__type_name__iexact=property_type_name, is_active=True, is_deleted=False)
+            .first()
+        )
+        if not prop_type:
+            # Fallback: match across any language
+            prop_type = (
+                LandlordPropertyTypeModel.objects.filter(
+                    translations__type_name__iexact=property_type_name,
+                    is_active=True, is_deleted=False
+                )
+                .first()
+            )
+    if not prop_type:
+        return Response({"status": "error", "message": "Invalid propertyType."}, status=status.HTTP_400_BAD_REQUEST)
 
     property_city_instance = (
         CityModel.objects
@@ -606,8 +690,8 @@ def add_landlord_property_details(request):
                 number_of_beds=n_beds if n_beds else None,
                 number_of_windows=n_windows if n_windows else None,
                 max_people_allowed=max_people_allowed if max_people_allowed else None,
-                current_male_occupants=current_male_occupants if current_male_occupants else None,
-                current_female_occupants=current_female_occupants if current_female_occupants else None,
+                current_male_occupants=current_male_occupants if current_male_occupants else 0,
+                current_female_occupants=current_female_occupants if current_female_occupants else 0,
                 floor=r_floor if r_floor else None,
                 location_in_property=loc
             )
@@ -730,13 +814,48 @@ def add_landlord_property_details(request):
         .values_list('id', flat=True)
     )
     print(f'tenant_ids ${tenant_ids}')
-
+    media_qs = LandlordPropertyMediaModel.objects.filter(property=property_instance)
+    media_list = [
+        {
+            "url": media.url,       # or media.file.url
+            "type": media.type,     # e.g. "image" or whatever your model has
+        }
+        for media in media_qs
+    ]
     if tenant_ids:
+        ptype = property_instance.property_type
+        type_serialized = {
+            "id": ptype.id,
+            "type_name": ptype.safe_translation_getter('type_name', language_code=lang_code, any_language=True) or "",
+            "description": ptype.safe_translation_getter('description', language_code=lang_code, any_language=True) or "",
+        }
+        amenities_serialized = []
+        for am in property_instance.amenities.filter(is_active=True, is_deleted=False):
+            amenities_serialized.append({
+                "id": am.id,
+                "name": am.safe_translation_getter('name', language_code=lang_code, any_language=True) or "",
+                "description": am.safe_translation_getter('description', language_code=lang_code, any_language=True) or "",
+            })
+
+        final_payload = {
+            "property": {
+                "id": property_instance.id,
+                "name": property_instance.property_name,
+                "type": type_serialized,
+                "size": property_instance.property_size,
+                "city" : property_instance.property_city.name,
+                "cityNameWithId" : f'{property_instance.property_city.name}:{property_instance.property_city.id}',
+                "amenities": amenities_serialized,   # assuming it's a list field
+                "currency_symbol": property_instance.property_city.state.country.currency_symbol,
+            },
+            "media": media_list,
+            "landlord_id": landlord_id,
+        }
         send_onesignal_notification(
         tenant_ids=tenant_ids,
         headings={"en": "New Property in Your Preferred City"},
         contents={"en": f"A landlord just listed “{property_name}” in {property_city}."},
-        data={"property_id": property_instance.id, "type": "tenant_new_property"},
+        data={"result": final_payload, "type": "tenant_new_property"},
         )
     return Response({"status": "success", "message": "Property details saved successfully."}, status=status.HTTP_201_CREATED)
 
@@ -1025,31 +1144,53 @@ def get_property_types_and_amenities(request):
     """
     API to fetch all active landlord property types and amenities.
     Optionally accepts a 'country_code' in the request params to retrieve the currency details,
-    and a 'landlord_id' to check for base preferences.
+    and a 'landlord_id' to check for base preferences and preferred language.
     """
+    # Determine language: prefer landlord's preferred language, fallback to request or settings
+    print(f'request.data {request.data}')
+    landlord_id = request.data.get("landlord_id")
+    found_base_pref = False
+
+    landlord = LandlordDetailsModel.objects.filter(id=landlord_id, is_active=True, is_deleted=False).first()
+    if landlord:
+        # override language if landlord has a preference
+        try:
+            preferred = getattr(landlord, "preferred_language", None)
+            if preferred and getattr(preferred, "code", None):
+                lang = preferred.code.split("-")[0].lower()
+        except Exception:
+            pass
+        found_base_pref = LandlordBasePreferenceModel.objects.filter(landlord_id=landlord_id).exists()
+    lang = 'de'
+    if landlord.preferred_language is not None:
+        lang = landlord.preferred_language.code
+    
     # Step 1: Fetch all active property types
     property_types = LandlordPropertyTypeModel.objects.filter(is_active=True, is_deleted=False)
-    
+
     # Step 2: Fetch all active amenities
     amenities = LandlordPropertyAmenityModel.objects.filter(is_active=True, is_deleted=False)
 
-    # Step 3: Serialize them
-    property_types_data = [
-        {
-            'id': pt.id,
-            'type_name': pt.type_name,
-            'description': pt.description
-        }
-        for pt in property_types
-    ]
-    amenities_data = [
-        {
-            'id': am.id,
-            'name': am.name,
-            'description': am.description
-        }
-        for am in amenities
-    ]
+    # Step 3: Serialize them with translation applied
+    property_types_data = []
+    for pt in property_types:
+        type_name = pt.safe_translation_getter("type_name", language_code=lang, any_language=True) or ""
+        description = pt.safe_translation_getter("description", language_code=lang, any_language=True) or ""
+        property_types_data.append({
+            "id": pt.id,
+            "type_name": type_name,
+            "description": description,
+        })
+
+    amenities_data = []
+    for am in amenities:
+        name = am.safe_translation_getter("name", language_code=lang, any_language=True) or ""
+        description = am.safe_translation_getter("description", language_code=lang, any_language=True) or ""
+        amenities_data.append({
+            "id": am.id,
+            "name": name,
+            "description": description,
+        })
 
     # Step 4: Optionally grab country for currency
     country_code = request.data.get("country_code", "").strip()
@@ -1062,25 +1203,17 @@ def get_property_types_and_amenities(request):
         except CountryModel.DoesNotExist:
             pass
 
-    # Step 5: Check for base preferences
-    landlord_id = request.data.get("landlord_id")
-    found_base_pref = False
-    if landlord_id is not None:
-        found_base_pref = LandlordBasePreferenceModel.objects.filter(
-            landlord_id=landlord_id
-        ).exists()
-
-    # Step 6: Build and return response
+    # Step 5: Build and return response
     resp = {
-        "property_types":        property_types_data,
+        "property_types":         property_types_data,
         "amenities":             amenities_data,
         "currency_name":         currency_name,
         "currency_symbol":       currency_symbol,
-        "found_base_preference": True,
+        "found_base_preference": found_base_pref,
     }
     return Response(
         ResponseData.success(resp, "Property types and amenities fetched successfully."),
-        status=status.HTTP_200_OK
+        status=200
     )
 
 @api_view(['POST'])
@@ -1405,18 +1538,27 @@ def get_landlord_property_details(request):
         if country and country.currency_symbol
         else (country.currency or '')
     )
+    lang = 'de'
+    landlord = LandlordDetailsModel.objects.filter(id=landlord_id).first()
+    if landlord.preferred_language is not None:
+        lang = landlord.preferred_language.code
     # STEP 1: Fetch all active property types
-    property_types = LandlordPropertyTypeModel.objects.filter(is_active=True, is_deleted=False)
-    
-    # STEP 2: Fetch all active amenities
-    amenities = LandlordPropertyAmenityModel.objects.filter(is_active=True, is_deleted=False)
-
+    property_types = (
+        LandlordPropertyTypeModel.objects.filter()
+        .language(lang)  # sets active language context for queryset
+        .filter(is_deleted=False)
+    )
+    amenities = (
+        LandlordPropertyAmenityModel.objects.filter()
+        .language(lang)  # sets active language context for queryset
+        .filter(is_deleted=False)
+    )
     # STEP 3: Prepare response data
     property_types_data = [
         {
             'id': property_type.id,
-            'type_name': property_type.type_name,
-            'description': property_type.description
+        'type_name': property_type.safe_translation_getter('type_name', language_code=lang, any_language=True),
+        'description': property_type.safe_translation_getter('description', language_code=lang, any_language=True)
         }
         for property_type in property_types
     ]
@@ -1424,8 +1566,8 @@ def get_landlord_property_details(request):
     amenities_data = [
         {
             'id': amenity.id,
-            'name': amenity.name,
-            'description': amenity.description
+        'name': amenity.safe_translation_getter('name', language_code=lang, any_language=True),
+        'description': amenity.safe_translation_getter('description', language_code=lang, any_language=True)
         }
         for amenity in amenities
     ]
@@ -1500,7 +1642,7 @@ def get_landlord_property_details(request):
                 
                 # Fetch options for the related model (like OccupationModel or any other model)
                 if content_model:
-                    all_option_ids = content_model.objects.filter(is_active=True, is_deleted=False).values_list("id", flat=True)
+                    all_option_ids = content_model.objects.filter().values_list("id", flat=True)
                         
                 print(f'all_option_ids {all_option_ids}')
                 print(f'grouped_answers {grouped_answers}')

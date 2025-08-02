@@ -6,6 +6,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from datetime import timedelta
+from django.utils.translation import get_language
 # At the top of your views.py
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch  # Add this import
@@ -104,6 +105,7 @@ def tenant_signup(request):
                     is_verified=False
                 ).first()
                 otp = str(random.randint(100000, 999999))  # Generate OTP
+                print(f'tenant.email {tenant.email} {otp}')
                 if tenant_verification:
                     # Generate a new OTP and send email
                     tenant_verification.otp = otp
@@ -121,7 +123,7 @@ def tenant_signup(request):
                     send_otp_email(tenant.email, otp)
                 message = get_translation("SUCC_TENANT_OTP_SENT", language_code)
                 return Response(
-                    ResponseData.success_without_data(message),
+                    ResponseData.success(tenant_verification.tenant.id,message),
                     status=status.HTTP_200_OK
                 )
             elif tenant is not None and tenant.is_active is True:
@@ -158,6 +160,7 @@ def tenant_signup(request):
                     # If no password is provided, create tenant as active directly.
                     if preferred_language:
                         validated_data['preferred_language'] = preferred_language
+                    validated_data['is_google_account'] = True
                     tenant = TenantDetailsModel.objects.create(**validated_data, is_active=True)
                     message = get_translation("SUCC_TENANT_SIGNUP", language_code)
                     return Response(
@@ -286,7 +289,7 @@ def get_tenant_preference_questions_answers(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    user_id = serializer.validated_data.get('user_id')
+    user_id = serializer.validated_data['user_id']
     
     # Step 2: Fetch the tenant based on user_id
     tenant = TenantDetailsModel.objects.filter(id=user_id, is_active=True).first()
@@ -296,27 +299,41 @@ def get_tenant_preference_questions_answers(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    # Step 3: Fetch all active and non-deleted tenant preference questions with related types and options
-    questions = TenantPreferenceQuestionModel.objects.filter(
-        is_active=True, 
-        is_deleted=False
-    ).select_related('question_type').prefetch_related('question_options')
+    # Determine language codes
+    lang = tenant.preferred_language.code   # e.g. "de"
+    fallback = "en"
+    
+    # Step 3: Fetch questions with their translations and options+translations
+    questions = (
+        TenantPreferenceQuestionModel.objects
+        .filter(is_active=True, is_deleted=False)
+        .select_related('question_type')
+        .prefetch_related(
+            'translations',
+            Prefetch(
+                'options',
+                queryset=TenantPreferenceOptionModel.objects.prefetch_related('translations')
+            )
+        )
+    )
     
     # Step 4: Prepare the response data
     data = []
     for question in questions:
-        # Initialize question data structure without options yet
+        # Pull the correct translation (or fallback)
+        q_text = question.safe_translation_getter('title', language_code=lang, any_language=True) or ""
+        
         question_data = {
             'id': question.id,
-            'question_text': question.question_text,
+            'question_text': q_text,
             'question_type': {
                 'id': question.question_type.id,
                 'type_name': question.question_type.type_name,
-                'description': question.question_type.description
-            }
+                'description': question.question_type.description,
+            },
         }
         
-        # Fetch answers for this question by the tenant, if any
+        # Fetch this tenant’s answers for the question
         answers = TenantPreferenceAnswerModel.objects.filter(
             tenant=tenant,
             question=question,
@@ -324,39 +341,30 @@ def get_tenant_preference_questions_answers(request):
             is_deleted=False
         ).order_by('priority')
         
-        # Build a list of selected option IDs based on the question type.
-        selected_option_ids = []
-        if answers.exists():
-            if question.question_type.type_name in ['single_mcq', 'multiple_mcq', 'priority_based']:
-                selected_option_ids = [answer.option.id for answer in answers]
+        selected_option_ids = [a.option_id for a in answers] if answers.exists() else []
         
-        # Separate the question options into selected and unselected lists.
         selected_options = []
         unselected_options = []
-        for option in question.question_options.all():
-            option_data = {
-                'id': option.id,
-                'option_text': option.option_text
-            }
-            if option.id in selected_option_ids:
-                selected_options.append(option_data)
+        for opt in question.options.all():
+            o_text = opt.safe_translation_getter('text', language_code=lang, any_language=True) or ""
+            opt_data = {'id': opt.id, 'option_text': o_text}
+            
+            if opt.id in selected_option_ids:
+                selected_options.append(opt_data)
             else:
-                unselected_options.append(option_data)
+                unselected_options.append(opt_data)
         
-        # Add the separated lists into the question data.
-        question_data['selected_options'] = selected_options
+        question_data['selected_options']   = selected_options
         question_data['unselected_options'] = unselected_options
         
-        # Optionally, include raw answer data if needed:
         if answers.exists():
-            if question.question_type.type_name in ['single_mcq', 'multiple_mcq']:
+            tname = question.question_type.type_name
+            if tname in ['single_mcq', 'multiple_mcq']:
                 question_data['answers'] = selected_option_ids
-            elif question.question_type.type_name == 'priority_based':
+            elif tname == 'priority_based':
                 question_data['answers'] = [
-                    {
-                        'option_id': answer.option.id,
-                        'priority': answer.priority
-                    } for answer in answers
+                    {'option_id': a.option_id, 'priority': a.priority}
+                    for a in answers
                 ]
         
         data.append(question_data)
@@ -381,16 +389,14 @@ def get_tenant_profile_details(request):
     plus a basic suggestion on required identity documents based on occupation.
     """
     # Step 1: Validate request data
-    print(request.data)
     serializer = TenantProfileRequestSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
             ResponseData.error(serializer.errors),
             status=status.HTTP_400_BAD_REQUEST
         )
-    
     user_id = serializer.validated_data.get("user_id")
-    
+
     # Step 2: Fetch tenant
     tenant = TenantDetailsModel.objects.filter(id=user_id, is_active=True, is_deleted=False).first()
     if not tenant:
@@ -398,10 +404,19 @@ def get_tenant_profile_details(request):
             ResponseData.error("Invalid tenant ID or tenant is not active."),
             status=status.HTTP_400_BAD_REQUEST
         )
+
+    # determine language code (fall back to Django’s current or “en”)
+    lang_code = (
+        tenant.preferred_language.code
+        if getattr(tenant, "preferred_language", None) and tenant.preferred_language.code
+        else get_language() or "en"
+    )
+
     try:
         currency_symbol = tenant.preferred_city.state.country.currency_symbol
     except (AttributeError, TenantDetailsModel.DoesNotExist):
         currency_symbol = ''
+
     # Step 3: Build tenant basic profile data
     tenant_data = {
         "id": tenant.id,
@@ -412,17 +427,20 @@ def get_tenant_profile_details(request):
         "date_of_birth": tenant.date_of_birth.strftime("%Y-%m-%d") if tenant.date_of_birth else None,
         "profile_picture": tenant.profile_picture.url if tenant.profile_picture else None,
     }
-    
-    # Step 4: Fetch personality details (if exists) with null checks
+
+    # Step 4: Fetch personality details (if exists)
     personality = TenantPersonalityDetailsModel.objects.filter(
-        tenant=tenant, is_active=True, is_deleted=False
+        tenant=tenant,
+        is_active=True,
+        is_deleted=False,
     ).first()
-    
+
     if personality:
         personality_data = {
             "occupation": {
                 "id": personality.occupation.id if personality.occupation else None,
-                "title": personality.occupation.title if personality.occupation else None
+                "title": personality.occupation.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.occupation else None
             },
             "country": {
                 "id": personality.country.id if personality.country else None,
@@ -430,33 +448,40 @@ def get_tenant_profile_details(request):
             },
             "religion": {
                 "id": personality.religion.id if personality.religion else None,
-                "title": personality.religion.title if personality.religion else None
+                "title": personality.religion.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.religion else None
             },
             "income_range": {
                 "id": personality.income_range.id if personality.income_range else None,
-                "title": personality.income_range.title if personality.income_range else None,
+                "title": personality.income_range.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.income_range else None,
                 "min_income": personality.income_range.min_income if personality.income_range else None,
                 "max_income": personality.income_range.max_income if personality.income_range else None,
             },
             "smoking_habit": {
                 "id": personality.smoking_habit.id if personality.smoking_habit else None,
-                "title": personality.smoking_habit.title if personality.smoking_habit else None
+                "title": personality.smoking_habit.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.smoking_habit else None
             },
             "drinking_habit": {
                 "id": personality.drinking_habit.id if personality.drinking_habit else None,
-                "title": personality.drinking_habit.title if personality.drinking_habit else None
+                "title": personality.drinking_habit.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.drinking_habit else None
             },
             "socializing_habit": {
                 "id": personality.socializing_habit.id if personality.socializing_habit else None,
-                "title": personality.socializing_habit.title if personality.socializing_habit else None
+                "title": personality.socializing_habit.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.socializing_habit else None
             },
             "relationship_status": {
                 "id": personality.relationship_status.id if personality.relationship_status else None,
-                "title": personality.relationship_status.title if personality.relationship_status else None
+                "title": personality.relationship_status.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.relationship_status else None
             },
             "food_habit": {
                 "id": personality.food_habit.id if personality.food_habit else None,
-                "title": personality.food_habit.title if personality.food_habit else None
+                "title": personality.food_habit.safe_translation_getter("title", language_code=lang_code, any_language=True)
+                         if personality.food_habit else None
             },
             "pet_lover": personality.pet_lover,
             "created_at": personality.created_at.strftime("%Y-%m-%d %H:%M:%S") if personality.created_at else None,
@@ -469,57 +494,59 @@ def get_tenant_profile_details(request):
         return [
             {
                 "id": obj.id,
-                "title": getattr(obj, key, None),
+                "title": obj.safe_translation_getter(key, language_code=lang_code, any_language=True)
+                         if hasattr(obj, "safe_translation_getter") else getattr(obj, key, None),
                 "is_selected": (obj.id == selected_id)
             }
             for obj in queryset.filter(is_active=True, is_deleted=False)
         ]
-    
+
     occupations = get_options(
-        OccupationModel.objects, 
-        key='title', 
+        OccupationModel.objects,
+        key='title',
         selected_id=personality.occupation.id if personality and personality.occupation else None
     )
     religions = get_options(
-        ReligionModel.objects, 
-        key='title', 
+        ReligionModel.objects,
+        key='title',
         selected_id=personality.religion.id if personality and personality.religion else None
     )
     income_ranges = get_options(
-        IncomeRangeModel.objects, 
-        key='title', 
+        IncomeRangeModel.objects,
+        key='title',
         selected_id=personality.income_range.id if personality and personality.income_range else None
     )
     smoking_habits = get_options(
-        SmokingHabitModel.objects, 
-        key='title', 
+        SmokingHabitModel.objects,
+        key='title',
         selected_id=personality.smoking_habit.id if personality and personality.smoking_habit else None
     )
     drinking_habits = get_options(
-        DrinkingHabitModel.objects, 
-        key='title', 
+        DrinkingHabitModel.objects,
+        key='title',
         selected_id=personality.drinking_habit.id if personality and personality.drinking_habit else None
     )
     socializing_habits = get_options(
-        SocializingHabitModel.objects, 
-        key='title', 
+        SocializingHabitModel.objects,
+        key='title',
         selected_id=personality.socializing_habit.id if personality and personality.socializing_habit else None
     )
     relationship_statuses = get_options(
-        RelationshipStatusModel.objects, 
-        key='title', 
+        RelationshipStatusModel.objects,
+        key='title',
         selected_id=personality.relationship_status.id if personality and personality.relationship_status else None
     )
     food_habits = get_options(
-        FoodHabitModel.objects, 
-        key='title', 
+        FoodHabitModel.objects,
+        key='title',
         selected_id=personality.food_habit.id if personality and personality.food_habit else None
     )
     countries = get_options(
-        CountryModel.objects, 
-        key='name', 
+        CountryModel.objects,
+        key='name',
         selected_id=personality.country.id if personality and personality.country else None
     )
+
     document_types = TenantDocumentTypeModel.objects.filter(is_active=True, is_deleted=False)
     document_types_data = [
         {
@@ -531,38 +558,33 @@ def get_tenant_profile_details(request):
     ]
 
     # Step 6: Calculate profile completion
-    # Out of 7 fields, 4 are always filled (first_name, last_name, email, password) => we only check phone_number, date_of_birth, profile_picture
     total_profile_fields = 3
-    filled_profile = 0
-    if tenant.phone_number: filled_profile += 1
-    if tenant.date_of_birth: filled_profile += 1
-    if tenant.profile_picture: filled_profile += 1
+    filled_profile = sum(bool(getattr(tenant, f)) for f in ['phone_number', 'date_of_birth', 'profile_picture'])
     profile_completion = int((filled_profile / total_profile_fields) * 100)
 
-    # Step 7: Calculate personality completion (10 fields)
-    # occupation, country, religion, income_range, smoking_habit, drinking_habit,
-    # socializing_habit, relationship_status, food_habit, pet_lover
+    # Step 7: Calculate personality completion
     total_personality_fields = 10
-    filled_personality = 0
-    if personality and personality.occupation: filled_personality += 1
-    if personality and personality.country: filled_personality += 1
-    if personality and personality.religion: filled_personality += 1
-    if personality and personality.income_range: filled_personality += 1
-    if personality and personality.smoking_habit: filled_personality += 1
-    if personality and personality.drinking_habit: filled_personality += 1
-    if personality and personality.socializing_habit: filled_personality += 1
-    if personality and personality.relationship_status: filled_personality += 1
-    if personality and personality.food_habit: filled_personality += 1
-    if personality and personality.country: filled_personality += 1
-    #if personality and personality.pet_lover: filled_personality += 1
-    personality_completion = int((filled_personality / total_personality_fields) * 100)
-
-    # Step 8: Basic logic to suggest which document is needed based on occupation title
+    if personality:
+        total_personality_fields = 10
+        filled_personality = sum(
+            bool(getattr(personality, field))
+            for field in [
+                'occupation','country','religion','income_range',
+                'smoking_habit','drinking_habit','socializing_habit',
+                'relationship_status','food_habit','pet_lover'
+            ]
+        )
+        personality_completion = int((filled_personality / total_personality_fields) * 100)
+    else:
+        personality_completion = 0
+    # Step 8: Suggest required documents
+    occ_title = (
+        personality.occupation.safe_translation_getter("title", language_code=lang_code, any_language=True) or ""
+    ).lower() if personality and personality.occupation else ""
     required_documents = []
-    occupant_title = (personality.occupation.title.lower() if personality and personality.occupation else '') if personality else ''
-    if "student" in occupant_title:
+    if "student" in occ_title:
         required_documents.append("Student ID")
-    elif "employee" in occupant_title or "work" in occupant_title:
+    elif "employee" in occ_title or "work" in occ_title:
         required_documents.append("Work ID")
     else:
         required_documents.append("Any Government ID")
@@ -571,7 +593,7 @@ def get_tenant_profile_details(request):
     data = {
         "tenant": tenant_data,
         "personality_details": personality_data,
-        'preferred_country_currency' : currency_symbol,
+        "preferred_country_currency": currency_symbol,
         "dropdown_options": {
             "occupations": occupations,
             "religions": religions,
@@ -581,15 +603,13 @@ def get_tenant_profile_details(request):
             "socializing_habits": socializing_habits,
             "relationship_statuses": relationship_statuses,
             "food_habits": food_habits,
-            "country" : countries,
+            "country": countries,
         },
         "profile_completion": profile_completion,
         "personality_completion": personality_completion,
         "required_identity_documents": required_documents,
     }
-    print(f'profile_completion {profile_completion}')
-    print(f'personality_completion {personality_completion}')
-    print(f'required_identity_documents {required_documents}')
+
     return Response(
         ResponseData.success(data, "Tenant profile fetched successfully."),
         status=status.HTTP_200_OK
@@ -896,8 +916,14 @@ def get_properties_by_city_overview(request):
     # Build map: question_text -> list of {value, priority}
     prefs = {}
     for ans in raw_answers:
-        text = ans.static_option or ans.option.option_text
-        q_text = ans.question.question_text
+        # pull translated option text (or any language fallback) instead of non‑existent .option_text
+        text = ans.static_option or ans.option.safe_translation_getter(
+            'text', language_code=tenant.preferred_language.code, any_language=True
+        )
+        # likewise pull the translated question text
+        q_text = ans.question.safe_translation_getter(
+            'text', language_code=tenant.preferred_language.code, any_language=True
+        )
         prefs.setdefault(q_text, []).append({
             'value': text,
             'priority': ans.priority or 1

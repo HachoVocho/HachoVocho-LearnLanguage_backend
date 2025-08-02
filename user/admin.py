@@ -11,7 +11,7 @@ from .models import (
     RelationshipStatusModel,
     FoodHabitModel,
 )
-
+from parler.admin import TranslatableAdmin
 @admin.register(UserRoleModel)
 class UserRoleModelAdmin(admin.ModelAdmin):
     """
@@ -23,7 +23,7 @@ class UserRoleModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(OccupationModel)
-class OccupationModelAdmin(admin.ModelAdmin):
+class OccupationModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage occupation options.
     """
@@ -33,7 +33,7 @@ class OccupationModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(ReligionModel)
-class ReligionModelAdmin(admin.ModelAdmin):
+class ReligionModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage religion options.
     """
@@ -43,7 +43,7 @@ class ReligionModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(IncomeRangeModel)
-class IncomeRangeModelAdmin(admin.ModelAdmin):
+class IncomeRangeModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage income range options.
     """
@@ -53,7 +53,7 @@ class IncomeRangeModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(SmokingHabitModel)
-class SmokingHabitModelAdmin(admin.ModelAdmin):
+class SmokingHabitModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage smoking habit options.
     """
@@ -63,7 +63,7 @@ class SmokingHabitModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(DrinkingHabitModel)
-class DrinkingHabitModelAdmin(admin.ModelAdmin):
+class DrinkingHabitModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage drinking habit options.
     """
@@ -73,7 +73,7 @@ class DrinkingHabitModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(SocializingHabitModel)
-class SocializingHabitModelAdmin(admin.ModelAdmin):
+class SocializingHabitModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage socializing habit options.
     """
@@ -83,7 +83,7 @@ class SocializingHabitModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(RelationshipStatusModel)
-class RelationshipStatusModelAdmin(admin.ModelAdmin):
+class RelationshipStatusModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage relationship status options.
     """
@@ -93,7 +93,7 @@ class RelationshipStatusModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')  # Fields that are read-only
 
 @admin.register(FoodHabitModel)
-class FoodHabitModelAdmin(admin.ModelAdmin):
+class FoodHabitModelAdmin(TranslatableAdmin):
     """
     Custom admin class to manage food habit options.
     """

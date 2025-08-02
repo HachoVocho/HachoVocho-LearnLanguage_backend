@@ -13,6 +13,7 @@ from .models import (
     TenantPreferenceOptionModel,
     TenantPreferenceAnswerModel,
 )
+from parler.admin import TranslatableAdmin
 
 @admin.register(TenantDetailsModel)
 class TenantDetailsAdmin(admin.ModelAdmin):
@@ -56,19 +57,16 @@ class TenantPreferenceQuestionTypeModelAdmin(admin.ModelAdmin):
     list_display = ('type_name', 'description', 'is_active')
     list_filter = ('is_active', 'is_deleted', 'created_at')
     readonly_fields = ('created_at', 'deleted_at')
-
-
+    
 @admin.register(TenantPreferenceQuestionModel)
-class TenantPreferenceQuestionModelAdmin(admin.ModelAdmin):
-    list_display = ('id', 'question_text', 'question_type')
-    search_fields = ('question_text',)
+class TenantPreferenceQuestionModelAdmin(TranslatableAdmin):
+    list_display = ('id','title', 'question_type')
+    search_fields = ('question_type',)
     readonly_fields = ('created_at', 'deleted_at')
-
-
+    
 @admin.register(TenantPreferenceOptionModel)
-class TenantPreferenceOptionModelAdmin(admin.ModelAdmin):
-    list_display = ('id', 'question', 'option_text')
-    search_fields = ('question__question_text', 'option_text')
+class TenantPreferenceOptionModelAdmin(TranslatableAdmin):
+    list_display = ('id', 'title','question')
     readonly_fields = ('created_at', 'deleted_at')
 
 

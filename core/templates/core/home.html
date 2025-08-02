@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hachovocho | Smarter Tenant-Landlord Matching</title>
+    <title>HV-homes | Intelligente Vermieter-Mieter-Vermittlung</title>
 
     <!-- Tailwind v2 CDN -->
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
@@ -22,22 +22,69 @@
         .dropdown-list { position: absolute; left: 0; right: 0; z-index: 50; background: #ffffff; border: 1px solid #e5e7eb; max-height: 14rem; overflow-y: auto; box-shadow: 0 8px 16px rgba(0,0,0,0.06); }
         .dropdown-item { padding: 0.5rem 1rem; cursor: pointer; }
         .dropdown-item:hover { background: #f9fafb; }
+        /* Language selector */
+        .lang-selector { background: transparent; border: none; appearance: none; padding-right: 1.5rem; cursor: pointer; }
+        .lang-selector:focus { outline: none; }
+        .lang-wrapper { position: relative; }
+        .lang-wrapper::after { content: "▼"; position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); font-size: 0.6rem; pointer-events: none; }
+        /* Google Translate banner hiding */
+        .goog-te-banner-frame { display: none !important; }
+        body { top: 0 !important; }
+        /* Hide ALL Google Translate UI elements */
+        .goog-te-banner-frame,
+        .goog-te-menu-frame,
+        .goog-te-ftab,
+        .goog-te-gadget,
+        .goog-te-combo,
+        .skiptranslate,
+        .goog-te-banner *,
+        .goog-te-float *,
+        .goog-te-menu-value > span,
+        .goog-te-spinner-pos,
+        .goog-tooltip {
+          display: none !important;
+          visibility: hidden !important;
+          opacity: 0 !important;
+          height: 0 !important;
+          width: 0 !important;
+          overflow: hidden !important;
+        }
+      
+        /* Prevent Google from adding extra space */
+        body {
+          top: 0 !important;
+        }
     </style>
 </head>
 <body class="font-sans antialiased text-gray-800">
+    <!-- Google Translate Element -->
+    <div id="google_translate_element"></div>
+
     <!-- ───────────── Navigation ───────────── -->
     <nav class="bg-white shadow-sm sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
             <!-- logo -->
             <div class="flex items-center space-x-2">
-                <img src="logo.png" alt="Hachovocho" class="h-8 w-auto" />
-                <span class="text-xl font-bold">Hachovocho</span>
+                <img src="logo.png" alt="HV-homes" class="h-8 w-auto" />
+                <span class="text-xl font-bold">HV-homes</span>
             </div>
             <!-- links -->
-            <div class="hidden md:flex items-center space-x-6">
-                <a href="#features" class="text-gray-600 hover:text-indigo-600">Features</a>
-                <a href="#testimonials" class="text-gray-600 hover:text-indigo-600">Testimonials</a>
-                <a href="#download" class="text-gray-600 hover:text-indigo-600">Download</a>
+            <div class="flex items-center space-x-6">
+                <div class="hidden md:flex items-center space-x-6">
+                    <a href="#features" class="text-gray-600 hover:text-indigo-600">Funktionen</a>
+                    <a href="#testimonials" class="text-gray-600 hover:text-indigo-600">Erfahrungen</a>
+                    <a href="#download" class="text-gray-600 hover:text-indigo-600">Download</a>
+                </div>
+                <!-- Language Selector -->
+                <div class="lang-wrapper">
+                    <select id="lang-select" class="lang-selector">
+                        <option value="de">🇩🇪 Deutsch</option>
+                        <option value="en">🇬🇧 English</option>
+                        <option value="es">🇪🇸 Español</option>
+                        <option value="fr">🇫🇷 Français</option>
+                        <option value="tr">🇹🇷 Türkçe</option>
+                    </select>
+                </div>
             </div>
         </div>
     </nav>
@@ -45,29 +92,29 @@
     <!-- ───────────── Hero ───────────── -->
     <header class="bg-indigo-50 py-24">
         <div class="max-w-5xl mx-auto px-4 text-center">
-            <h1 class="text-4xl md:text-5xl font-bold leading-tight mb-6">Find Your Perfect Rental Match in Berlin</h1>
-            <p class="text-xl text-gray-700 mb-10 max-w-2xl mx-auto">Our AI pairs compatible tenants and landlords, so everyone finds a place (and a person) that truly feels like home.</p>
+            <h1 class="text-4xl md:text-5xl font-bold leading-tight mb-6">Finden Sie Ihre perfekte Wohnung in Berlin</h1>
+            <p class="text-xl text-gray-700 mb-10 max-w-2xl mx-auto">Unsere KI bringt passende Mieter und Vermieter zusammen, damit jeder einen Ort (und eine Person) findet, der sich wirklich wie zu Hause anfühlt.</p>
 
             <!-- progress bar (social proof) -->
             <div class="max-w-lg mx-auto mb-12">
                 <div class="bg-gray-200 rounded-full h-3 overflow-hidden"><div class="bg-indigo-600 h-3 rounded-full progress-bar"></div></div>
-                <p class="mt-2 text-sm text-gray-600">Average match accuracy: 82%</p>
+                <p class="mt-2 text-sm text-gray-600">Durchschnittliche Übereinstimmungsgenauigkeit: 82%</p>
             </div>
 
             <!-- NEW: City search -->
             <div class="max-w-md mx-auto mb-8 dropdown">
-                <input id="city-input" type="text" placeholder="Enter a city …" autocomplete="off" class="w-full border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                <input id="city-input" type="text" placeholder="Stadt eingeben …" autocomplete="off" class="w-full border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                 <div id="city-dropdown" class="dropdown-list hidden"></div>
             </div>
 
-            <a href="#download" class="inline-block px-8 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md">Get the App</a>
+            <a href="#download" class="inline-block px-8 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md">App herunterladen</a>
         </div>
     </header>
 
     <!-- ───────────── Property Results (hidden until city chosen) ───────────── -->
     <section id="property-section" class="py-16 bg-white hidden">
         <div class="max-w-7xl mx-auto px-4">
-            <h2 class="text-2xl font-bold mb-8">Properties in <span id="city-name" class="text-indigo-600"></span></h2>
+            <h2 class="text-2xl font-bold mb-8">Immobilien in <span id="city-name" class="text-indigo-600"></span></h2>
             <div id="property-grid" class="grid md:grid-cols-3 gap-8"></div>
         </div>
     </section>
@@ -75,9 +122,9 @@
     <!-- ───────────── Metrics ───────────── -->
     <section class="py-16 bg-white">
         <div class="max-w-7xl mx-auto px-4 grid md:grid-cols-3 gap-8 text-center">
-            <div><div class="text-3xl font-bold text-indigo-600 mb-2">10+</div><p class="text-gray-600">Successful Matches</p><span class="text-sm text-gray-400">in Berlin</span></div>
-            <div><div class="text-3xl font-bold text-indigo-600 mb-2">87%</div><p class="text-gray-600">User Satisfaction</p><span class="text-sm text-gray-400">verified respondents</span></div>
-            <div><div class="text-3xl font-bold text-indigo-600 mb-2">20h+</div><p class="text-gray-600">Time Saved</p><span class="text-sm text-gray-400">per landlord each month</span></div>
+            <div><div class="text-3xl font-bold text-indigo-600 mb-2">10+</div><p class="text-gray-600">Erfolgreiche Vermittlungen</p><span class="text-sm text-gray-400">in Berlin</span></div>
+            <div><div class="text-3xl font-bold text-indigo-600 mb-2">87%</div><p class="text-gray-600">Nutzerzufriedenheit</p><span class="text-sm text-gray-400">bestätigte Antworten</span></div>
+            <div><div class="text-3xl font-bold text-indigo-600 mb-2">20h+</div><p class="text-gray-600">Zeitersparnis</p><span class="text-sm text-gray-400">pro Vermieter monatlich</span></div>
         </div>
     </section>
 
@@ -85,29 +132,29 @@
     <section id="features" class="py-20 bg-gray-50">
         <div class="max-w-7xl mx-auto px-4">
             <div class="text-center mb-12">
-                <h2 class="text-3xl font-bold">How We Create Better Matches</h2>
-                <p class="text-gray-600 mt-4">Real features supporting Berlin's rental community</p>
+                <h2 class="text-3xl font-bold">Wie wir bessere Vermittlungen schaffen</h2>
+                <p class="text-gray-600 mt-4">Echte Funktionen für Berlins Mietgemeinschaft</p>
             </div>
             <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-percent text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Personality Match Score</h3><p class="text-gray-600">See compatibility before chatting</p></div>
-                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-filter text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Smart Filters</h3><p class="text-gray-600">Automatic pre-screening saves precious hours</p></div>
-                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-calendar-alt text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">One-Click Scheduling</h3><p class="text-gray-600">Coordinate viewings without endless messages</p></div>
-                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-euro-sign text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Pay-As-You-Match</h3><p class="text-gray-600">No subscription fees for landlords</p></div>
+                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-percent text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Persönlichkeits-Match-Score</h3><p class="text-gray-600">Kompatibilität vor dem Chat einsehen</p></div>
+                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-filter text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Intelligente Filter</h3><p class="text-gray-600">Automatische Vorauswahl spart wertvolle Stunden</p></div>
+                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-calendar-alt text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Ein-Klick-Terminplanung</h3><p class="text-gray-600">Besichtigungen ohne endlose Nachrichten koordinieren</p></div>
+                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-euro-sign text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Pay-As-You-Match</h3><p class="text-gray-600">Keine Abogebühren für Vermieter</p></div>
                 <div class="bg-white p-6 rounded-xl hover-lift relative">
                     <!-- badge -->
                     <span
                       class="absolute top-2 right-2 bg-yellow-100 text-yellow-800
                              text-xs font-semibold px-2 py-0.5 rounded">
-                        Upcoming
+                        Bald verfügbar
                     </span>
                 
                     <div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4">
                         <i class="fas fa-shield-alt text-indigo-600"></i>
                     </div>
-                    <h3 class="text-xl font-semibold mb-2">Verified Profiles</h3>
-                    <p class="text-gray-600">Government-ID verification for all users</p>
+                    <h3 class="text-xl font-semibold mb-2">Verifizierte Profile</h3>
+                    <p class="text-gray-600">Ausweisverifizierung für alle Nutzer</p>
                 </div>
-                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-comments text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Secure Chat</h3><p class="text-gray-600">Built-in messaging with read receipts</p></div>
+                <div class="bg-white p-6 rounded-xl hover-lift"><div class="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-4"><i class="fas fa-comments text-indigo-600"></i></div><h3 class="text-xl font-semibold mb-2">Sicherer Chat</h3><p class="text-gray-600">Integrierter Messenger mit Lesebestätigungen</p></div>
             </div>
         </div>
     </section>
@@ -115,10 +162,10 @@
     <!-- ───────────── Testimonials ───────────── -->
     <section id="testimonials" class="py-20 bg-white">
         <div class="max-w-7xl mx-auto px-4">
-            <div class="text-center mb-12"><h2 class="text-3xl font-bold">Berliners Love Hachovocho</h2><p class="text-gray-600 mt-4">Real stories from our early users</p></div>
+            <div class="text-center mb-12"><h2 class="text-3xl font-bold">Berliner lieben HV-homes</h2><p class="text-gray-600 mt-4">Echte Geschichten unserer ersten Nutzer</p></div>
             <div class="grid md:grid-cols-2 gap-8">
-                <div class="bg-indigo-50 p-8 rounded-xl flex flex-col justify-between hover-lift"><div><div class="flex items-center mb-4"><img src="tenant-avatar.jpg" alt="Anna" class="w-12 h-12 rounded-full"/><div class="ml-4"><h4 class="font-semibold">Anna S.</h4><p class="text-sm text-gray-600">Tenant • Prenzlauer Berg</p></div></div><p class="text-gray-700">"Found my apartment in just two weeks. The match score meant I only spoke to landlords who appreciated my vibe."</p></div><div class="mt-6 flex items-center"><div class="w-full bg-white rounded-full h-2"><div class="bg-indigo-600 h-2 rounded-full" style="width: 85%"></div></div><span class="ml-2 text-sm text-gray-600">85% match</span></div></div>
-                <div class="bg-green-50 p-8 rounded-xl flex flex-col justify-between hover-lift"><div><div class="flex items-center mb-4"><img src="landlord-avatar.jpg" alt="Markus" class="w-12 h-12 rounded-full"/><div class="ml-4"><h4 class="font-semibold">Markus B.</h4><p class="text-sm text-gray-600">Landlord • Mitte</p></div></div><p class="text-gray-700">"Hachovocho slashed my screening time. Now I only meet serious, qualified tenants—no more mountains of emails!"</p></div><div class="mt-6 text-sm text-gray-600">3 successful matches</div></div>
+                <div class="bg-indigo-50 p-8 rounded-xl flex flex-col justify-between hover-lift"><div><div class="flex items-center mb-4"><img src="tenant-avatar.jpg" alt="Anna" class="w-12 h-12 rounded-full"/><div class="ml-4"><h4 class="font-semibold">Anna S.</h4><p class="text-sm text-gray-600">Mieterin • Prenzlauer Berg</p></div></div><p class="text-gray-700">"Habe meine Wohnung in nur zwei Wochen gefunden. Der Match-Score sorgte dafür, dass ich nur mit Vermietern sprach, die zu mir passten."</p></div><div class="mt-6 flex items-center"><div class="w-full bg-white rounded-full h-2"><div class="bg-indigo-600 h-2 rounded-full" style="width: 85%"></div></div><span class="ml-2 text-sm text-gray-600">85% Übereinstimmung</span></div></div>
+                <div class="bg-green-50 p-8 rounded-xl flex flex-col justify-between hover-lift"><div><div class="flex items-center mb-4"><img src="landlord-avatar.jpg" alt="Markus" class="w-12 h-12 rounded-full"/><div class="ml-4"><h4 class="font-semibold">Markus B.</h4><p class="text-sm text-gray-600">Vermieter • Mitte</p></div></div><p class="text-gray-700">"HV-homes hat meine Auswahlzeit drastisch reduziert. Jetzt treffe ich nur noch ernsthafte, qualifizierte Mieter - keine E-Mail-Berge mehr!"</p></div><div class="mt-6 text-sm text-gray-600">3 erfolgreiche Vermittlungen</div></div>
             </div>
         </div>
     </section>
@@ -129,23 +176,42 @@
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 320" class="w-full h-full opacity-20 transform rotate-180"><path fill="#fff" d="M0,128L48,112C96,96,192,64,288,85.3C384,107,480,181,576,176C672,171,768,85,864,53.3C960,21,1056,43,1152,69.3C1248,96,1344,128,1392,144L1440,160L1440,0L1392,0C1344,0,1248,0,1152,0C1056,0,960,0,864,0C768,0,672,0,576,0C480,0,384,0,288,0C192,0,96,0,48,0L0,0Z"></path></svg>
         </div>
         <div class="relative max-w-7xl mx-auto px-4">
-            <h2 class="text-3xl font-bold mb-6 text-center">Start Matching Today—For Everyone</h2>
-            <p class="text-xl mb-12 max-w-2xl mx-auto text-center">Whether you're searching for a cozy flat or a dream tenant, Hachovocho has you covered.</p>
+            <h2 class="text-3xl font-bold mb-6 text-center">Starten Sie noch heute - für alle</h2>
+            <p class="text-xl mb-12 max-w-2xl mx-auto text-center">Egal, ob Sie eine gemütliche Wohnung suchen oder einen Traummieter - HV-homes ist für Sie da.</p>
             <div class="grid md:grid-cols-2 gap-8">
-                <div class="bg-white text-gray-900 p-8 rounded-xl hover-lift flex flex-col items-center text-center"><div class="bg-indigo-100 w-14 h-14 rounded-full flex items-center justify-center mb-4"><i class="fas fa-user text-indigo-600 text-xl"></i></div><h3 class="text-2xl font-semibold mb-3">I am a Tenant</h3><p class="mb-6 text-gray-600 max-w-sm">Discover verified apartments that match your lifestyle—in minutes.</p><div class="flex flex-col sm:flex-row sm:space-x-4 w-full sm:w-auto"><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-900 text-white rounded-lg mb-3 sm:mb-0 w-full sm:w-auto"><i class="fab fa-apple text-2xl"></i><span class="text-left"><span class="text-xs block">Download on the</span><span class="font-semibold">App Store</span></span></a><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-100 text-gray-900 rounded-lg w-full sm:w-auto"><i class="fab fa-google-play text-2xl"></i><span class="text-left"><span class="text-xs block">Get it on</span><span class="font-semibold">Google Play</span></span></a></div></div>
-                <div class="bg-white text-gray-900 p-8 rounded-xl hover-lift flex flex-col items-center text-center"><div class="bg-green-100 w-14 h-14 rounded-full flex items-center justify-center mb-4"><i class="fas fa-home text-green-600 text-xl"></i></div><h3 class="text-2xl font-semibold mb-3">I am a Landlord</h3><p class="mb-6 text-gray-600 max-w-sm">List your property and meet pre-qualified tenants—without the spam.</p><div class="flex flex-col sm:flex-row sm:space-x-4 w-full sm:w-auto"><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-900 text-white rounded-lg mb-3 sm:mb-0 w-full sm:w-auto"><i class="fab fa-apple text-2xl"></i><span class="text-left"><span class="text-xs block">Download on the</span><span class="font-semibold">App Store</span></span></a><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-100 text-gray-900 rounded-lg w-full sm:w-auto"><i class="fab fa-google-play text-2xl"></i><span class="text-left"><span class="text-xs block">Get it on</span><span class="font-semibold">Google Play</span></span></a></div></div>
+                <div class="bg-white text-gray-900 p-8 rounded-xl hover-lift flex flex-col items-center text-center"><div class="bg-indigo-100 w-14 h-14 rounded-full flex items-center justify-center mb-4"><i class="fas fa-user text-indigo-600 text-xl"></i></div><h3 class="text-2xl font-semibold mb-3">Ich bin Mieter</h3><p class="mb-6 text-gray-600 max-w-sm">Entdecken Sie verifizierte Wohnungen, die zu Ihrem Lebensstil passen - in Minuten.</p><div class="flex flex-col sm:flex-row sm:space-x-4 w-full sm:w-auto"><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-900 text-white rounded-lg mb-3 sm:mb-0 w-full sm:w-auto"><i class="fab fa-apple text-2xl"></i><span class="text-left"><span class="text-xs block">Download im</span><span class="font-semibold">App Store</span></span></a><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-100 text-gray-900 rounded-lg w-full sm:w-auto"><i class="fab fa-google-play text-2xl"></i><span class="text-left"><span class="text-xs block">Jetzt bei</span><span class="font-semibold">Google Play</span></span></a></div></div>
+                <div class="bg-white text-gray-900 p-8 rounded-xl hover-lift flex flex-col items-center text-center"><div class="bg-green-100 w-14 h-14 rounded-full flex items-center justify-center mb-4"><i class="fas fa-home text-green-600 text-xl"></i></div><h3 class="text-2xl font-semibold mb-3">Ich bin Vermieter</h3><p class="mb-6 text-gray-600 max-w-sm">Listen Sie Ihre Immobilie auf und treffen Sie qualifizierte Mieter - ohne Spam.</p><div class="flex flex-col sm:flex-row sm:space-x-4 w-full sm:w-auto"><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-900 text-white rounded-lg mb-3 sm:mb-0 w-full sm:w-auto"><i class="fab fa-apple text-2xl"></i><span class="text-left"><span class="text-xs block">Download im</span><span class="font-semibold">App Store</span></span></a><a href="#" class="flex items-center justify-center gap-3 px-6 py-3 bg-gray-100 text-gray-900 rounded-lg w-full sm:w-auto"><i class="fab fa-google-play text-2xl"></i><span class="text-left"><span class="text-xs block">Jetzt bei</span><span class="font-semibold">Google Play</span></span></a></div></div>
             </div>
         </div>
     </section>
 
     <!-- ───────────── Footer ───────────── -->
     <footer class="bg-gray-900 text-white py-12">
-        <div class="max-w-7xl mx-auto px-4 text-center"><p class="text-gray-400">© 2025 Hachovocho • Helping Berlin rent better<br /><span class="text-sm">Currently serving Berlin, Germany</span></p></div>
+        <div class="max-w-7xl mx-auto px-4 text-center"><p class="text-gray-400">© 2025 HV-homes • Hilft Berlinern beim Vermieten<br /><span class="text-sm">Aktuell verfügbar in Berlin, Deutschland</span></p></div>
     </footer>
 
     <!-- ───────────── JS: debounce search + property fetch ───────────── -->
     <script>
       (() => {
+        document.getElementById('lang-select').addEventListener('change', function() {
+          const lang = this.value;
+          
+          // Get Google's dropdown if it exists
+          const googleSelect = document.querySelector('.goog-te-combo');
+          
+          if (googleSelect) {
+            googleSelect.value = lang;
+            
+            // Trigger Google's translation
+            const event = new Event('change');
+            googleSelect.dispatchEvent(event);
+          }
+          
+          // Optional: Update UI text manually for German (original language)
+          if (lang === 'de') {
+            // Restore original German text here if needed
+          }
+        });
         const input   = document.getElementById('city-input');
         const listEl  = document.getElementById('city-dropdown');
         const grid    = document.getElementById('property-grid');
@@ -183,14 +249,14 @@
           input.value = city.name;
           listEl.classList.add('hidden');
           cityLbl.textContent = city.name;
-          grid.innerHTML = '<p class="col-span-3 text-center text-gray-500">Loading properties…</p>';
+          grid.innerHTML = '<p class="col-span-3 text-center text-gray-500">Lade Immobilien…</p>';
           section.classList.remove('hidden');
           fetch(`/api/cities/${city.id}/properties/`)
             .then(r => r.json())
             .then(({properties}) => {
               grid.innerHTML = '';
               if (!properties.length){
-                grid.innerHTML = '<p class="col-span-3 text-center text-gray-600">No properties found.</p>';
+                grid.innerHTML = '<p class="col-span-3 text-center text-gray-600">Keine Immobilien gefunden.</p>';
                 return;
               }
               properties.forEach(p => grid.appendChild(propertyCard(p)));
@@ -211,7 +277,7 @@
               <img src="${hero}"
                    class="w-full h-40 object-cover rounded mb-4"
                    alt="${p.name}"
-                   onerror="this.onerror=null;this.src='https://via.placeholder.com/600x240?text=No+Image';">
+                   onerror="this.onerror=null;this.src='https://via.placeholder.com/600x240?text=Kein+Bild';">
             `;
           
             /* ---------- title & type ---------- */
@@ -226,7 +292,7 @@
             /* ---------- distance ---------- */
             if (p.distance_km !== null){
               card.innerHTML += `<p class="text-xs text-gray-500 mb-4">
-                  ${p.distance_km} km to city centre
+                  ${p.distance_km} km zum Stadtzentrum
                 </p>`;
             }
           
@@ -244,7 +310,7 @@
               li.innerHTML = `
                 <img src="${imgUrl}"
                      class="w-10 h-10 object-cover rounded mr-2"
-                     onerror="this.onerror=null;this.src='https://via.placeholder.com/80?text=Bed';">
+                     onerror="this.onerror=null;this.src='https://via.placeholder.com/80?text=Raum';">
                 <span class="flex-1">${b.room} • <strong>${b.private}</strong></span>
                 <span class="font-medium">${b.rent} ${b.period}</span>`;
               list.appendChild(li);
@@ -264,12 +330,74 @@
             /* ---------- CTA ---------- */
             card.innerHTML += `<a 
                   class="mt-auto text-indigo-600 hover:underline text-sm font-medium">
-                  See full listing in app →
+                  Vollständige Anzeige in der App →
                 </a>`;
             return card;
           }
           
       })();
+    </script>
+    
+    <!-- Google Translate Implementation -->
+    <script>
+        // Google Translate initialization function
+        function googleTranslateElementInit() {
+            new google.translate.TranslateElement({
+                pageLanguage: 'de',
+                includedLanguages: 'de,en,es,fr,tr',
+                layout: google.translate.TranslateElement.InlineLayout.HIDE,
+                autoDisplay: false,
+                disableAutoTranslation: true
+            }, 'google_translate_element');
+        }
+        
+        // Language selector change handler
+        document.getElementById('lang-select').addEventListener('change', function() {
+          const lang = this.value;
+          
+          // Find Google's hidden dropdown
+          const googleSelect = document.querySelector('.goog-te-combo');
+          
+          if (googleSelect) {
+            googleSelect.value = lang;
+            googleSelect.dispatchEvent(new Event('change'));
+          }
+          
+          // If German is selected, revert to original text
+          if (lang === 'de' && window.google?.translate?.TranslateElement) {
+            google.translate.TranslateElement().restore();
+          }
+        });
+        
+        // Update UI elements based on language selection
+        function updateUIText(lang) {
+            if (lang === 'de') {
+                // Update UI elements to German
+                document.querySelector('title').textContent = 'HV-homes | Intelligente Vermieter-Mieter-Vermittlung';
+                document.querySelector('nav a[href="#features"]').textContent = 'Funktionen';
+                document.querySelector('nav a[href="#testimonials"]').textContent = 'Erfahrungen';
+                document.querySelector('nav a[href="#download"]').textContent = 'Download';
+                document.querySelector('header h1').textContent = 'Finden Sie Ihre perfekte Wohnung in Berlin';
+                document.querySelector('header p').textContent = 'Unsere KI bringt passende Mieter und Vermieter zusammen, damit jeder einen Ort (und eine Person) findet, der sich wirklich wie zu Hause anfühlt.';
+                document.querySelector('header a').textContent = 'App herunterladen';
+                document.querySelector('#features h2').textContent = 'Wie wir bessere Vermittlungen schaffen';
+                document.querySelector('#testimonials h2').textContent = 'Berliner lieben HV-homes';
+                document.querySelector('#download h2').textContent = 'Starten Sie noch heute - für alle';
+                document.querySelector('footer p').textContent = '© 2025 HV-homes • Hilft Berlinern beim Vermieten';
+            }
+        }
+        
+        // Load Google Translate script
+        function loadGoogleTranslate() {
+            const script = document.createElement('script');
+            script.src = 'https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';
+            document.body.appendChild(script);
+        }
+        
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            loadGoogleTranslate();
+        });
     </script>
 </body>
 </html>

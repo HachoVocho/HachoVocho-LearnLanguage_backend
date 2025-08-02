@@ -5,7 +5,7 @@ from asgiref.sync import async_to_sync, sync_to_async
 from django.contrib.contenttypes.models import ContentType
 
 from appointments.models import AppointmentBookingModel
-from interest_requests.models import LandlordInterestRequestModel, TenantInterestRequestModel
+from interest_requests.models import InterestRequestStatusModel, LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.models import LandlordRoomWiseBedModel
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 
@@ -31,12 +31,13 @@ class Command(BaseCommand):
 
     @sync_to_async
     def get_tenant_req_closed(self, tenant, bed):
+        status = InterestRequestStatusModel.objects.get(code='closed')
         return TenantInterestRequestModel.objects.filter(
             tenant=tenant,
             bed=bed,
             is_deleted=False,
             is_active=False,
-            status="closed"
+            status=status
         ).first()
 
     @sync_to_async

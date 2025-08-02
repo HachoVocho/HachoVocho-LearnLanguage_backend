@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils.timezone import now
+from parler.models import TranslatableModel, TranslatedFields
 
 class UserRoleModel(models.Model):
     ROLE_CHOICES = [
@@ -15,28 +16,30 @@ class UserRoleModel(models.Model):
     def __str__(self):
         return self.role_name
       
-class OccupationModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+class OccupationModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
     
-class ReligionModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+class ReligionModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
     
-class IncomeRangeModel(models.Model):
-    title = models.CharField(max_length=50, unique=True)  # Descriptive title like "Two-Figure Income"
+class IncomeRangeModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     min_income = models.PositiveIntegerField(null=True, blank=True)  # Minimum income in the range
     max_income = models.PositiveIntegerField(null=True, blank=True)  # Maximum income in the range
     is_active = models.BooleanField(default=True)  # Active status
@@ -44,58 +47,56 @@ class IncomeRangeModel(models.Model):
     created_at = models.DateTimeField(default=now)  # Creation timestamp
     deleted_at = models.DateTimeField(null=True, blank=True)  # Deletion timestamp
 
-    def __str__(self):
-        return self.title
     
-class SmokingHabitModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+class SmokingHabitModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
-    
-class DrinkingHabitModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+     
+class DrinkingHabitModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
     
-class SocializingHabitModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+class SocializingHabitModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
     
-class RelationshipStatusModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+class RelationshipStatusModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
     
-class FoodHabitModel(models.Model):
-    title = models.CharField(max_length=20, unique=True)
+class FoodHabitModel(TranslatableModel):
+    translations = TranslatedFields(
+        title = models.CharField(max_length=50),
+    )
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return self.title
     
 
 class OTPModel(models.Model):

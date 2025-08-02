@@ -10,7 +10,8 @@ class ChatMessageModel(models.Model):
     """
     sender = models.CharField(max_length=100)
     receiver = models.CharField(max_length=100)
-    message = models.TextField()
+    original_message = models.TextField()
+    translated_message = models.TextField()
     is_read = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)

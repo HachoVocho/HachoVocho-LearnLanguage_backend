@@ -153,12 +153,12 @@ def login(request):
         email = serializer.validated_data['email']
         password = serializer.validated_data['password']
         isLandlord = serializer.validated_data['isLandlord']
-        
+        print(f'passwordpassword {email} {password}')
         if not isLandlord:
             # Tenant login flow
             tenant = TenantDetailsModel.objects.filter(email=email, is_active=True).first()
             if tenant:
-                if tenant.password != '' and password != '':
+                if password != '' and not tenant.is_google_account:
                     if check_password(password, tenant.password):
                         tokens = get_tokens_for_user(tenant)
                         message = get_translation("SUCC_LOGIN_TENANT", language_code)
@@ -180,7 +180,7 @@ def login(request):
                             ResponseData.error(message),
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                elif password == '':
+                elif tenant.is_google_account and password == '':
                     tokens = get_tokens_for_user(tenant)
                     message = get_translation("SUCC_LOGIN_TENANT", language_code)
                     return Response(
@@ -200,7 +200,9 @@ def login(request):
             # Landlord login flow
             landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
             if landlord:
-                if landlord.password != '':
+                print('111')
+                if password != '' and not landlord.is_google_account:
+                    print('222')
                     if check_password(password, landlord.password):
                         tokens = get_tokens_for_user(landlord)
                         message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
@@ -222,7 +224,7 @@ def login(request):
                             ResponseData.error(message),
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                elif landlord.password == '':
+                elif landlord.is_google_account and password == '':
                     tokens = get_tokens_for_user(landlord)
                     message = get_translation("SUCC_LOGIN_LANDLORD", language_code)
                     return Response(
@@ -347,8 +349,8 @@ def refresh_token(request):
         print("[Token Refresh] === Refresh process completed ===\n")
         
 @api_view(["POST"])
-@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+#@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@permission_classes([AllowAny])
 def forgot_password(request):
     """API to handle forgot password request."""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
@@ -431,7 +433,7 @@ def forgot_password(request):
     
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def update_password(request):
     """API to handle password update."""
     language_code = request.data.get("language_code", DEFAULT_LANGUAGE_CODE)
@@ -454,7 +456,9 @@ def update_password(request):
 
             landlord = LandlordDetailsModel.objects.filter(email=email, is_active=True).first()
             if landlord:
+                print(f'new_password {new_password}')
                 landlord.password = make_password(new_password)
+                print(f'new_password_after {new_password}')
                 landlord.save()
                 message = get_translation("SUCC_PASSWORD_UPDATED_LANDLORD", language_code)
                 return Response(

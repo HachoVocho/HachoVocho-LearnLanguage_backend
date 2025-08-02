@@ -1,10 +1,10 @@
 # dashboard/consumers.py
 import json
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
-from interest_requests.models import LandlordInterestRequestModel, TenantInterestRequestModel
+from interest_requests.models import InterestRequestStatusModel, LandlordInterestRequestModel, TenantInterestRequestModel
 from tenant.models import TenantDetailsModel
 from landlord.models import LandlordPropertyDetailsModel
-from appointments.models import AppointmentBookingModel
+from appointments.models import AppointmentBookingModel, AppointmentStatusModel
 from chat.models import ChatMessageModel
 from django.contrib.auth.models import AnonymousUser
 from user.ws_auth import authenticate_websocket
@@ -70,21 +70,23 @@ class TenantDashboardConsumer(AsyncJsonWebsocketConsumer):
         ).acount()
         print(f"[TenantDashboardConsumer] properties count: {props}")
 
+        status = InterestRequestStatusModel.objects.get(code='accepted')
         t_reqs = await TenantInterestRequestModel.objects.filter(
             tenant=t,
             is_active=True, is_deleted=False
-        ).exclude(status='accepted').acount()
+        ).exclude(status=status).acount()
 
         # 2) Landlord-initiated requests
         l_reqs = await LandlordInterestRequestModel.objects.filter(
             tenant=t,
             is_active=True, is_deleted=False
-        ).exclude(status='accepted').acount()
+        ).exclude(status=status).acount()
 
         total_reqs = t_reqs + l_reqs
+        status = AppointmentStatusModel.objects.get(code='pending')
         # 3) Pending appointments for this tenant
         appts = await AppointmentBookingModel.objects.filter(
-            tenant=t, status="pending", is_active=True, is_deleted=False
+            tenant=t, status=status, is_active=True, is_deleted=False
         ).acount()
         print(f"[TenantDashboardConsumer] pending_appointments count: {appts}")
 

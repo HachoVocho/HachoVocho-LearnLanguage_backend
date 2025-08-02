@@ -1,17 +1,19 @@
 from django.db import models
+from django.contrib.postgres.fields import JSONField
 from django.utils.timezone import now
-
+from parler.models import TranslatableModel, TranslatedFields
 from localization.models import CityModel, CountryModel
 from translations.models import LanguageModel
 from user.models import DrinkingHabitModel, FoodHabitModel, IncomeRangeModel, IncomeRangeModel, OccupationModel, RelationshipStatusModel, ReligionModel, SmokingHabitModel, SocializingHabitModel
 
 class TenantDetailsModel(models.Model):
     first_name = models.CharField(max_length=50)
-    last_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50,blank=True)
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=128,blank=True,null=True)
     phone_number = models.CharField(max_length=15, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
+    is_google_account = models.BooleanField(default=False)
     profile_picture = models.FileField(upload_to="static/profile_pictures/",null=True,blank=True)
     preferred_city = models.ForeignKey(CityModel, on_delete=models.CASCADE, related_name='preferred_city',blank=True,null=True)
     preferred_language = models.ForeignKey(LanguageModel, on_delete=models.CASCADE, related_name='preferred_language_tenant',blank=True,null=True)
@@ -130,31 +132,34 @@ class TenantPreferenceQuestionTypeModel(models.Model):
     def __str__(self):
         return self.type_name
 
-class TenantPreferenceQuestionModel(models.Model):
-    question_text = models.TextField()
+class TenantPreferenceQuestionModel(TranslatableModel):
     question_type = models.ForeignKey(TenantPreferenceQuestionTypeModel, on_delete=models.CASCADE, related_name='question_type')
-
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
-
+    translations = TranslatedFields(
+        title = models.TextField()
+    )
+    
     def __str__(self):
-        return f"{self.question_text} ({self.question_type})"
+        return f"{self.question_type} ({self.question_type})"
 # Tables for priority-based questions with options or dropdown values
-
-class TenantPreferenceOptionModel(models.Model):
-    question = models.ForeignKey(TenantPreferenceQuestionModel, on_delete=models.CASCADE, related_name='question_options')
-    option_text = models.CharField(max_length=255)
-
-    is_active = models.BooleanField(default=True)
+    
+class TenantPreferenceOptionModel(TranslatableModel):
+    question = models.ForeignKey(
+        TenantPreferenceQuestionModel,
+        on_delete=models.CASCADE,
+        related_name='options'
+    )
+    is_active  = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     deleted_at = models.DateTimeField(null=True, blank=True)
-
-    def __str__(self):
-        return self.option_text
-
+    translations = TranslatedFields(
+        title = models.TextField()
+    )
+    
 class TenantPreferenceAnswerModel(models.Model):
     tenant = models.ForeignKey(TenantDetailsModel, on_delete=models.CASCADE, related_name='answers')
     question = models.ForeignKey(TenantPreferenceQuestionModel, on_delete=models.CASCADE, related_name='answers')
@@ -167,5 +172,5 @@ class TenantPreferenceAnswerModel(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"User: {self.tenant.email}, Question: {self.question.question_text}"
+        return f"User: {self.tenant.email}, Question: {self.question.question_type}"
       

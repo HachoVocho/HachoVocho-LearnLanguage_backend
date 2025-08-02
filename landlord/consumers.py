@@ -1,10 +1,10 @@
 # dashboard/consumers.py
 import json
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
-from interest_requests.models import LandlordInterestRequestModel, TenantInterestRequestModel
+from interest_requests.models import InterestRequestStatusModel, LandlordInterestRequestModel, TenantInterestRequestModel
 from .models import LandlordDetailsModel
 from landlord.models import LandlordPropertyDetailsModel
-from appointments.models import AppointmentBookingModel
+from appointments.models import AppointmentBookingModel, AppointmentStatusModel
 from chat.models import ChatMessageModel
 from django.contrib.auth.models import AnonymousUser
 from user.ws_auth import authenticate_websocket
@@ -65,23 +65,25 @@ class LandlordDashboardConsumer(AsyncJsonWebsocketConsumer):
         l = self.landlord
 
         # 2) Interest-request count by this Landlord
+        status = InterestRequestStatusModel.objects.get(code='accepted')
         t_reqs = await TenantInterestRequestModel.objects.filter(
             bed__room__property__landlord=l,
             is_active=True, is_deleted=False
-        ).exclude(status='accepted').acount()
+        ).exclude(status=status).acount()
 
         # 2) Landlord-initiated requests
         l_reqs = await LandlordInterestRequestModel.objects.filter(
             bed__room__property__landlord=l,
             is_active=True, is_deleted=False
-        ).exclude(status='accepted').acount()
+        ).exclude(status=status).acount()
 
         total_reqs = t_reqs + l_reqs
         print(f"[LandlordDashboardConsumer] tenant_reqs={t_reqs}, landlord_reqs={l_reqs}, total={total_reqs}")
 
+        status = AppointmentStatusModel.objects.get(code='pending')
         # 3) Pending appointments for this Landlord
         appts = await AppointmentBookingModel.objects.filter(
-            landlord=l, status="pending", is_active=True, is_deleted=False
+            landlord=l, status=status, is_active=True, is_deleted=False
         ).acount()
         print(f"[LandlordDashboardConsumer] pending_appointments count: {appts}")
 

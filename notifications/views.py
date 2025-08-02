@@ -27,7 +27,7 @@ from .serializers import (
 
 @api_view(['POST'])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def register_tenant_device(request):
     """
     Register or update a tenant's OneSignal player_id.

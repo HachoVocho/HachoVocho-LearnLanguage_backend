@@ -11,7 +11,7 @@ from .models import (
 )
 class LandlordSignupSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(max_length=50)
-    last_name = serializers.CharField(max_length=50)
+    last_name = serializers.CharField(max_length=50,allow_blank=True)
     email = serializers.EmailField()
     password = serializers.CharField(
         max_length=128,
@@ -100,7 +100,7 @@ class LandlordAnswerSerializer(serializers.ModelSerializer):
     def get_question(self, obj):
         return {
             "id": obj.question.id,
-            "text": obj.question.question_text
+            "text": obj.question.safe_translation_getter('title', language_code='de', any_language=True)
         }
 
     def get_object_id(self, obj):

@@ -4,10 +4,12 @@ from datetime import timedelta
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 import json
+from django.db import transaction
+from django.db import IntegrityError
 from django.contrib.contenttypes.models import ContentType
 from HachoVocho_housing_backend import settings
 from appointments.consumers import AppointmentRepository
-from appointments.models import AppointmentBookingModel
+from appointments.models import AppointmentBookingModel, AppointmentStatusModel
 from landlord.models import LandlordBasePreferenceModel, LandlordBedMediaModel, LandlordDetailsModel, LandlordPropertyDetailsModel, LandlordRoomMediaModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
 from localization.models import CityModel, CountryModel
@@ -16,7 +18,7 @@ from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from user.fetch_match_details import compute_personality_match
 from user.refresh_count_for_groups import refresh_counts_for_groups
 from user.ws_auth import authenticate_websocket
-from .models import LandlordInterestRequestModel, TenantInterestRequestModel
+from .models import InterestRequestStatusModel, LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.views import build_all_tabs
 from django.db.models import Q, F
 from django.contrib.auth.models import AnonymousUser
@@ -355,35 +357,29 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
         except LandlordRoomWiseBedModel.DoesNotExist:
             return {"error": "Bed not found."}
 
-        # Check if an interest request already exists for this tenant and bed.
-        existing = TenantInterestRequestModel.objects.filter(
-            tenant__id=tenant_id,
-            bed=bed,
-            is_active=True,
-            is_deleted=False
-        ).exists()
-
-        if existing:
-            return {"error": "Interest request already exists."}
-
         try:
             tenant = TenantDetailsModel.objects.get(id=tenant_id)
         except TenantDetailsModel.DoesNotExist:
             return {"error": "Tenant not found."}
 
-        # Create a new interest request with default status "pending".
-        req = TenantInterestRequestModel.objects.create(
-            tenant=tenant,
-            bed=bed,
-            status="pending"  # default status
-        )
+        try:
+            status = InterestRequestStatusModel.objects.get(code='pending')
 
+            # Create a new interest request with default status "pending".
+            req = TenantInterestRequestModel.objects.create(
+                tenant=tenant,
+                bed=bed,
+                status=status  # default status
+            )
+        except IntegrityError:
+            return {"error": "Interest request already exists."}
         return {
             "bed_id": bed.id,
             "landlord_id" : bed.room.property.landlord.id,
             "tenant_id" : tenant_id,
             'property_id' : property_id,
-            "interest_status": req.status,
+            "interest_status": req.status.code,
+            "status_id" : req.status.id,
             "message": req.landlord_message,  # likely empty by default
             "is_initiated_by_landlord": False  # tenant initiated this request
         }
@@ -478,16 +474,18 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 is_active=True,
                 is_deleted=False
             ).first()
-
+            status_id = -1
             if tenant_req:
-                interest_status = tenant_req.status
+                interest_status = tenant_req.status.code
                 message = tenant_req.landlord_message
                 shown_by_landlord = False
+                status_id = tenant_req.status.id
                 print(f"   → Found tenant_req: status={interest_status}")
             elif landlord_req:
-                interest_status = landlord_req.status
+                interest_status = landlord_req.status.code
                 message = landlord_req.tenant_message
                 shown_by_landlord = True
+                status_id = landlord_req.status.id
                 print(f"   → Found landlord_req: status={interest_status}")
             else:
                 interest_status = ""
@@ -518,7 +516,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                     "date": slot.availability.date.strftime('%Y-%m-%d'),
                     "start_time": slot.start_time.strftime('%I:%M %p'),
                     "end_time": slot.end_time.strftime('%I:%M %p'),
-                    "status": appt.status,
+                    "status": appt.status.code,
                 }
                 print(f"   → Appointment details: {appointment_details}")
             city_obj = CityModel.objects.filter(id=bed.room.property.property_city.id).first()
@@ -565,6 +563,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 "price": str(bed.rent_amount) + f' {currency_symbol}',
                 "rent_type" : 'Month' if bed.is_rent_monthly else 'Day',
                 "interest_status": interest_status,
+                "status_id" : status_id,
                 "message": message,
                 "is_initiated_by_landlord": shown_by_landlord,
                 "appointment_details": appointment_details,
@@ -592,7 +591,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 req = request_qs.first()
                 landlord_request_data = {
                     "bed_id": bed_id,
-                    "status": req.status,
+                    "status": req.status.code,
                     "tenant_message": req.tenant_message,
                 }
                 result.append(landlord_request_data)
@@ -617,13 +616,15 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
             print({
                 "bed_id": bed_id,
                 "interest_status": req.status,
+                "status_id" : req.status.id,
                 "message": req.tenant_message,
                 "tenant_id" : tenant_id,
                 "is_initiated_by_landlord" : True
             })
             return {
                 "bed_id": bed_id,
-                "interest_status": req.status,
+                "interest_status": req.status.code,
+                "status_id" : req.status.id,
                 "message": req.tenant_message,
                 "tenant_id" : tenant_id,
                 "is_initiated_by_landlord" : True
@@ -655,7 +656,8 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 "last_name": tenant.last_name,
                 "bed_id" : bed_id,
                 "date_of_birth": str(tenant.date_of_birth) if tenant.date_of_birth else "",
-                "interest_status": req.status,
+                "interest_status": req.status.code,
+                "status_id" : req.status.id,
                 "landlord_message": req.landlord_message,
             }
             return {
@@ -695,7 +697,7 @@ class TenantInterestRequestConsumer(AsyncWebsocketConsumer):
                 try:
                     req.close()  # calls the model's close() method (if defined)
                 except AttributeError:
-                    req.status = "closed"
+                    req.status.code = "closed"
                 req.save()
                 return {
                     "bed_id": bed_id,
@@ -772,7 +774,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             elif action == "send_invitation_to_tenant":
                 tenant_id = data.get("tenant_id")
                 bed_id = data.get("bed_id")
-                result = await self.invitation_to_tenant(tenant_id,bed_id)
+                result = await self.invitation_to_tenant(tenant_id,bed_id,self.landlord_id)
                 print(f'result123 {result}')
                 room_id = await self.get_room_id_for_bed(bed_id)
                 room_group = f"tenant_{tenant_id}_room_{room_id}"
@@ -1007,27 +1009,26 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def accept_appointment_request_of_tenant(self, tenant_id, bed_id):
         try:
-            # Fetch the appointment request for the given tenant and bed
-            appointment = AppointmentBookingModel.objects.get(
-                tenant__id=tenant_id,
-                bed__id=bed_id,
-                is_active=True,
-                is_deleted=False,
-                initiated_by='tenant',
-                status='pending'  # Ensure we're only confirming pending appointments
-            )
+            pending_status = AppointmentStatusModel.objects.get(code='pending')
+            confirmed_status = AppointmentStatusModel.objects.get(code='confirmed')
 
-            # Update the appointment status to 'confirmed' and set initiated_by to 'tenant'
-            appointment.status = 'confirmed'
-            appointment.save()
-
-            # Return success response
+            with transaction.atomic():
+                appointment = AppointmentBookingModel.objects.select_for_update().get(
+                    tenant__id=tenant_id,
+                    bed__id=bed_id,
+                    is_active=True,
+                    is_deleted=False,
+                    initiated_by='tenant',
+                    status=pending_status
+                )
+                appointment.status = confirmed_status
+                appointment.save(update_fields=["status"])
             return {
                 "appointment_id": appointment.id,
                 "tenant_id": tenant_id,
                 "bed_id": bed_id,
                 "initiated_by": "tenant",
-                "appointment_status": appointment.status,
+                "appointment_status": appointment.status.code,
             }
         except AppointmentBookingModel.DoesNotExist:
             return {"error": "No pending appointment request found for the given tenant and bed."}
@@ -1063,12 +1064,13 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
 
         # If no active tenant request exists, try to get a closed one.
         if not tenant_req:
+            status = InterestRequestStatusModel.objects.get(code='closed')
             tenant_req = TenantInterestRequestModel.objects.filter(
                 tenant=tenant,
                 bed=bed,
                 is_deleted=False,
                 is_active=False,
-                status="closed"
+                status=status
             ).first()
 
         # Similarly for landlord-initiated requests.
@@ -1089,12 +1091,12 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             ).first()
 
         if tenant_req:
-            interest_status = tenant_req.status
+            interest_status = tenant_req.status.code
             message = tenant_req.landlord_message
             interest_shown_by = "tenant"
             request_closed_by = getattr(tenant_req, "request_closed_by", "")
         elif landlord_req:
-            interest_status = landlord_req.status
+            interest_status = landlord_req.status.code
             message = landlord_req.tenant_message
             interest_shown_by = "landlord"
             request_closed_by = getattr(landlord_req, "request_closed_by", "")
@@ -1130,6 +1132,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             "last_name": tenant.last_name,
             "date_of_birth": str(tenant.date_of_birth) if tenant.date_of_birth else "",
             "interest_status": interest_status,
+            "status_id" : tenant_req.status.id,
             "message": message,
             "bed_id": bed_id,
             "request_closed_by": request_closed_by,
@@ -1288,14 +1291,18 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 message = ""
                 bed_obj = bed
             else:
+                landlord_details = LandlordDetailsModel.objects.filter(
+                id=landlord_id
+            ).first()
+                lang = 'en' if landlord_details.preferred_language is None else landlord_details.preferred_language.code
                 req = payload
                 tenant = req.tenant
-                status = req.status
+                status = req.status.safe_translation_getter('label', language_code=lang, any_language=True)
                 message = (req.landlord_message if tag == "tenant_req"
                         else req.tenant_message)
                 bed_obj = req.bed
 
-                if status.lower() == "accepted":
+                if status == "accepted":
                     appt_q = AppointmentBookingModel.objects.filter(
                         Q(bed__in=beds) if bed_id == -1 else Q(bed=bed),
                         tenant=tenant,
@@ -1324,6 +1331,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                     tenant.profile_picture.url if tenant.profile_picture else None,
                 "date_of_birth": str(tenant.date_of_birth) or "",
                 "interest_status": status,
+                "status_id" : req.status.id,
                 "message": message,
                 "rent_type" : 'Month' if bed_obj.is_rent_monthly else 'Day',
                 "bed_id": bed_obj.id if bed_obj else None,
@@ -1362,7 +1370,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
 
 
     @database_sync_to_async
-    def invitation_to_tenant(self, tenant_id, bed_id):
+    def invitation_to_tenant(self, tenant_id, bed_id,landlord_id):
         # Check if an active invitation already exists
         existing = LandlordInterestRequestModel.objects.filter(
             tenant__id=tenant_id,
@@ -1379,16 +1387,22 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
             tenant = TenantDetailsModel.objects.get(id=tenant_id)
             bed = LandlordRoomWiseBedModel.objects.get(id=bed_id)
 
+            status = InterestRequestStatusModel.objects.get(code='pending')
             # Create a new invitation record with a pending status
             req = LandlordInterestRequestModel.objects.create(
                 tenant=tenant,
                 bed=bed,
-                status='pending',  # default status
+                status=status,  # default status
             )
-
+            landlord_details = LandlordDetailsModel.objects.filter(
+            id=landlord_id
+            ).first()
+            lang = 'en' if landlord_details.preferred_language is None else landlord_details.preferred_language.code
+            status = req.status.safe_translation_getter('label', language_code=lang, any_language=True).code
             request_update = {
                 "bed_id": bed_id,
-                "interest_status": req.status,
+                "interest_status": status,
+                "status_id" : req.status.id,
                 "message": req.tenant_message,
                 "tenant_id" : tenant_id,
                 "landlord_id" : bed.room.property.landlord.id,
@@ -1425,7 +1439,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 try:
                     req.close()  # calls the model's close() method (if defined)
                 except AttributeError:
-                    req.status = "closed"
+                    req.status.code = "closed"
                 req.save()
                 return {
                     "bed_id": bed_id,
@@ -1451,7 +1465,7 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 is_active=True,
                 is_deleted=False
             )
-            req.status = 'closed'
+            req.status.code = 'closed'
             req.is_active = False
             req.is_deleted = True
             req.save()
@@ -1487,14 +1501,16 @@ class LandlordInterestRequestConsumer(AsyncWebsocketConsumer):
                 req.reject()
             print({
                 "bed_id": bed_id,
-                "interest_status": req.status,
+                "interest_status": req.status.code,
+                "status_id" : req.status.id,
                 "message": req.landlord_message,
                 "tenant_id" : tenant_id,
                 "is_initiated_by_landlord" : False,
             })
             return {
                 "bed_id": bed_id,
-                "interest_status": req.status,
+                "interest_status": req.status.code,
+                "status_id" : req.status.id,
                 "message": req.landlord_message,
                 "tenant_id" : tenant_id,
                 "landlord_id" : req.bed.room.property.landlord.id,

@@ -15,7 +15,8 @@ class ChatMessageModelAdmin(admin.ModelAdmin):
     list_display = (
         'sender',
         'receiver',
-        'message',
+        'original_message',
+        'translated_message',
         'is_read',
         'is_active',
         'is_deleted',
@@ -23,7 +24,7 @@ class ChatMessageModelAdmin(admin.ModelAdmin):
         'updated_at',
     )
     list_filter = ('is_read', 'is_active', 'is_deleted', 'created_at')
-    search_fields = ('sender', 'receiver', 'message')
+    search_fields = ('sender', 'receiver', 'original_message')
 
     inlines = [ChatMessageTranslationInline]
 
@@ -37,7 +38,6 @@ class ChatMessageTranslationModelAdmin(admin.ModelAdmin):
         'created_at',
     )
     list_filter = ('language_code', 'created_at')
-    search_fields = ('message__message', 'translated_text')
 
     def short_message(self, obj):
         # show a truncated preview of the original message

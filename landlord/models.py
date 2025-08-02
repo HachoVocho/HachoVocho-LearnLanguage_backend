@@ -4,15 +4,17 @@ from django.contrib.contenttypes.models import ContentType
 from django.utils.timezone import now
 from localization.models import CityModel
 from translations.models import LanguageModel
+from parler.models import TranslatableModel, TranslatedFields
 
 # Create your models here.
 class LandlordDetailsModel(models.Model):
     first_name = models.CharField(max_length=50)
-    last_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50,null=True,blank=True,default='')
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=128,null=True, blank=True)
     phone_number = models.CharField(max_length=15, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
+    is_google_account = models.BooleanField(default=False)
     profile_picture = models.ImageField(upload_to='static/profile_pictures/', null=True, blank=True)
     preferred_language = models.ForeignKey(LanguageModel, on_delete=models.CASCADE, related_name='preferred_language_landlord',blank=True,null=True)
     is_active = models.BooleanField(default=False)
@@ -41,9 +43,11 @@ class LandlordEmailVerificationModel(models.Model):
     def __str__(self):
         return f"{self.landlord.email} - Verified: {self.is_verified}"
 
-class LandlordPropertyTypeModel(models.Model):
-    type_name = models.CharField(max_length=50, unique=True)
-    description = models.TextField(null=True, blank=True)
+class LandlordPropertyTypeModel(TranslatableModel):
+    translations = TranslatedFields(
+        type_name = models.CharField(max_length=50),
+        description = models.TextField(null=True, blank=True),
+    )
 
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
@@ -51,11 +55,13 @@ class LandlordPropertyTypeModel(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return self.type_name
+        return self.safe_translation_getter('type_name', any_language=True)
 
-class LandlordPropertyAmenityModel(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(null=True, blank=True)
+class LandlordPropertyAmenityModel(TranslatableModel):
+    translations = TranslatedFields(
+        name = models.CharField(max_length=100),
+        description = models.TextField(null=True, blank=True),
+    )
 
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
@@ -63,7 +69,7 @@ class LandlordPropertyAmenityModel(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return self.name
+        return self.safe_translation_getter('name', any_language=True)
 
 class LandlordPropertyDetailsModel(models.Model):
     landlord = models.ForeignKey(LandlordDetailsModel, on_delete=models.CASCADE, related_name='properties')
@@ -169,17 +175,69 @@ class LandlordQuestionTypeModel(models.Model):
     def __str__(self):
         return self.type_name
 
-class LandlordQuestionModel(models.Model):
-    question_text = models.TextField()
-    question_type = models.ForeignKey(LandlordQuestionTypeModel, on_delete=models.CASCADE, related_name='question_type')
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE,related_name='question_content_type',null=True)
-    is_active = models.BooleanField(default=True)
-    is_deleted = models.BooleanField(default=False)
-    created_at = models.DateTimeField(default=now)
-    deleted_at = models.DateTimeField(null=True, blank=True)
+class LandlordQuestionModel(TranslatableModel):
+    """
+    A question, whose text is translated via Parler.
+    """
+    translations = TranslatedFields(
+        title = models.TextField(),
+    )
 
+    question_type = models.ForeignKey(
+        'LandlordQuestionTypeModel',
+        on_delete=models.CASCADE,
+        related_name='questions'
+    )
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        related_name='question_content_type',
+        null=True,
+        blank=True
+    )
+
+    is_active   = models.BooleanField(default=True)
+    is_deleted  = models.BooleanField(default=False)
+    created_at  = models.DateTimeField(default=now)
+    deleted_at  = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Landlord Question"
+        verbose_name_plural = "Landlord Questions"
+        ordering = ['-created_at']
+        # ensure per-language uniqueness
+        # Parler will automatically add unique_together = (language_code, master)
+    
     def __str__(self):
-        return f"{self.question_text} ({self.question_type})"
+        return self.safe_translation_getter('title', any_language=True)
+
+
+class LandlordOptionModel(TranslatableModel):
+    """
+    An option for a landlord question, with its text translated via Parler.
+    """
+    question = models.ForeignKey(
+        LandlordQuestionModel,
+        on_delete=models.CASCADE,
+        related_name='options'
+    )
+    translations = TranslatedFields(
+        title = models.CharField(max_length=255)
+    )
+
+    is_active   = models.BooleanField(default=True)
+    is_deleted  = models.BooleanField(default=False)
+    created_at  = models.DateTimeField(default=now)
+    deleted_at  = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Landlord Question Option"
+        verbose_name_plural = "Landlord Question Options"
+        ordering = ['-created_at']
+        # Parler adds unique_together (language_code, master)
+    
+    def __str__(self):
+        return self.safe_translation_getter('title', any_language=True)
     
 class LandlordAnswerModel(models.Model):
     landlord = models.ForeignKey(LandlordDetailsModel, on_delete=models.CASCADE, related_name='landlord_details',null=True)
@@ -232,22 +290,9 @@ class LandlordBedMediaModel(models.Model):
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
 
-class LandlordOptionModel(models.Model):
-    question = models.ForeignKey(LandlordQuestionModel, on_delete=models.CASCADE, related_name='question_options')
-    option_text = models.CharField(max_length=255)
-
-    is_active = models.BooleanField(default=True)
-    is_deleted = models.BooleanField(default=False)
-    created_at = models.DateTimeField(default=now)
-    deleted_at = models.DateTimeField(null=True, blank=True)
-
-    def __str__(self):
-        return self.option_text
-    
 class LandlordDocumentTypeModel(models.Model):
     type_name = models.CharField(max_length=50, unique=True)
     description = models.TextField(null=True, blank=True)
-
     is_active = models.BooleanField(default=True)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
@@ -255,7 +300,7 @@ class LandlordDocumentTypeModel(models.Model):
 
     def __str__(self):
         return self.type_name
-    
+
 class LandlordIdentityVerificationModel(models.Model):
     landlord = models.ForeignKey(LandlordDetailsModel, on_delete=models.CASCADE, related_name='identity_verifications')
     document_type = models.ForeignKey(LandlordDocumentTypeModel, on_delete=models.CASCADE, related_name='landlord_document_type')
@@ -285,7 +330,11 @@ class LandlordIdentityVerificationFile(models.Model):
     )
     file = models.FileField(upload_to='static/landlord_identity_documents/')
     uploaded_at = models.DateTimeField(default=now)
-
+    is_active = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=now)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    
     def __str__(self):
         return f"File for Document {self.identity_document.id}: {self.file.name}"
 

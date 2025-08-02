@@ -8,7 +8,7 @@ from django.utils.timezone import now
 from notifications.send_notifications import send_onesignal_notification
 from user.fetch_match_details import compute_personality_match
 
-from .models import AppointmentBookingModel
+from .models import AppointmentBookingModel, AppointmentStatusModel
 from .serializers import BookAppointmentSerializer, GetAppointmentsSerializer
 from landlord.models import LandlordBasePreferenceModel, LandlordDetailsModel, LandlordRoomWiseBedModel
 from landlord_availability.models import LandlordAvailabilitySlotModel
@@ -57,27 +57,59 @@ def book_appointment(request):
         is_active=True, is_deleted=False
     )
 
-    # Prevent duplicate booking
-    if AppointmentBookingModel.objects.filter(
-        tenant=tenant,
-        landlord=bed.room.property.landlord,
-        bed=bed,
-        time_slot=slot,
-        status='confirmed',
-        is_active=True,
-        is_deleted=False
-    ).exists():
+    appt_status = AppointmentStatusModel.objects.get(code='confirmed')
+    landlord_obj = bed.room.property.landlord
+
+    # full expected filter
+    expected_filters = {
+        "landlord": landlord_obj,
+        "bed": bed,
+        "time_slot": slot,
+        "status": appt_status,
+        "is_active": True,
+        "is_deleted": False,
+    }
+    print(f'expected_filters {expected_filters}')
+    if AppointmentBookingModel.objects.filter(**expected_filters).exists():
+        print("🟡 Slot already booked: exact confirmed appointment exists.")
         return Response(
             ResponseData.error("This slot is already booked."),
             status=status.HTTP_409_CONFLICT
         )
+
+    # Debugging: what part is missing?
+    print("🔍 No exact confirmed booking found. Breakdown of matches:")
+
+    for field, value in expected_filters.items():
+        try:
+            cnt = AppointmentBookingModel.objects.filter(**{field: value}).count()
+        except Exception as e:
+            cnt = f"error: {e}"
+        print(f"  - Matches with only {field}={getattr(value, 'id', value)!r}: {cnt}")
+
+    # Check combination of the four key identifiers (ignoring status/is_active/is_deleted)
+    partial_qs = AppointmentBookingModel.objects.filter(
+        tenant=tenant,
+        landlord=landlord_obj,
+        bed=bed,
+        time_slot=slot,
+    ).values('id', 'status__code', 'is_active', 'is_deleted')[:10]
+
+    if partial_qs:
+        print("  ⚙️ Found appointments with same tenant/landlord/bed/slot but differing in status/is_active/is_deleted:")
+        for row in partial_qs:
+            print(f"    -> {row}")
+    else:
+        print("  ⚠️ No appointment even with same tenant+landlord+bed+slot. Check those objects' identities:")
+        print(f"    tenant.id={tenant.id}, landlord.id={landlord_obj.id}, bed.id={bed.id}, slot.id={slot.id}")
     landlord = bed.room.property.landlord
+    appt_status = AppointmentStatusModel.objects.get(code='pending')
     appt = AppointmentBookingModel.objects.create(
         tenant=tenant,
         landlord=bed.room.property.landlord,
         bed=bed,
         time_slot=slot,
-        status="pending",
+        status=appt_status,
         initiated_by="landlord"
     )
 
@@ -91,7 +123,7 @@ def book_appointment(request):
             "bedId":      bed.id,
             "roomId":     bed.room.id,
             "slotId":     slot.id,
-            "status":     appt.status,
+            "status":     appt.status.code,
         }
     }
     channel_layer = get_channel_layer()
@@ -142,7 +174,7 @@ def book_appointment(request):
         "startTime":       slot.start_time.strftime("%H:%M"),
         "endTime":         slot.end_time.strftime("%H:%M"),
         "slotId":          slot.id,
-        "status":          appt.status,
+        "status":          appt.status.code,
         "createdAt":       appt.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "initiatedBy":     appt.initiated_by,
         "lastUpdatedBy":   appt.last_updated_by,

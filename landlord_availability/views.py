@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.response import Response
 from django.utils.timezone import now
 
+from appointments.models import AppointmentBookingModel, AppointmentStatusModel
 from landlord.models import LandlordDetailsModel, LandlordPropertyDetailsModel
 from .models import LandlordAvailabilityModel, LandlordAvailabilitySlotModel
 from .serializers import AddLandlordAvailabilitySerializer, DeleteLandlordAvailabilitySlotSerializer, GetLandlordAvailabilityDatesSerializer, GetLandlordAvailabilitySlotsSerializer
@@ -11,7 +12,7 @@ from response import Response as ResponseData
 from user.authentication import EnhancedJWTValidation
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
-
+from django.db import transaction, IntegrityError
 
 @api_view(["POST"])
 @authentication_classes([EnhancedJWTValidation, SessionAuthentication])
@@ -20,7 +21,8 @@ def add_landlord_availability(request):
     """
     API to add landlord availability for a specific property on one date
     or over a date-range (inclusive). Divides each given time period into
-    equal slots based on max_meetings.
+    equal slots based on max_meetings. Existing slots for the same availability
+    are replaced to avoid duplicates.
     """
     print(f'request.data {request.data}')
     serializer = AddLandlordAvailabilitySerializer(data=request.data)
@@ -30,21 +32,31 @@ def add_landlord_availability(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    landlord_id   = serializer.validated_data["landlord_id"]
-    property_id   = serializer.validated_data["property_id"]
-    single_date   = serializer.validated_data.get("date")
-    start_date    = serializer.validated_data.get("start_date")
-    end_date      = serializer.validated_data.get("end_date")
-    time_slots    = serializer.validated_data["time_slots"]
+    landlord_id = serializer.validated_data["landlord_id"]
+    property_id = serializer.validated_data["property_id"]
+    single_date = serializer.validated_data.get("date")
+    start_date = serializer.validated_data.get("start_date")
+    end_date = serializer.validated_data.get("end_date")
+    time_slots = serializer.validated_data["time_slots"]
 
     # Build the list of target dates
     if start_date and end_date:
+        if start_date > end_date:
+            return Response(
+                ResponseData.error("start_date must be less than or equal to end_date."),
+                status=status.HTTP_400_BAD_REQUEST
+            )
         dates = []
         cur = start_date
         while cur <= end_date:
             dates.append(cur)
             cur += datetime.timedelta(days=1)
     else:
+        if not single_date:
+            return Response(
+                ResponseData.error("Either 'date' or both 'start_date' and 'end_date' must be provided."),
+                status=status.HTTP_400_BAD_REQUEST
+            )
         dates = [single_date]
 
     # Validate landlord and property once
@@ -71,51 +83,63 @@ def add_landlord_availability(request):
 
     # For each date in the range (or the single date), upsert availability + slots
     for this_date in dates:
-        availability, created = LandlordAvailabilityModel.objects.update_or_create(
-            landlord=landlord,
-            property=property_instance,
-            date=this_date,
-            defaults={"is_active": True, "is_deleted": False, "updated_at": now()},
-        )
+        with transaction.atomic():
+            availability, created = LandlordAvailabilityModel.objects.update_or_create(
+                landlord=landlord,
+                property=property_instance,
+                date=this_date,
+                defaults={"is_active": True, "is_deleted": False, "updated_at": now()},
+            )
 
-        print(f'Processing {len(time_slots)} time_slots for date {this_date}')
-        for slot in time_slots:
-            start_time_str = slot.get("start_time")
-            end_time_str   = slot.get("end_time")
-            try:
-                max_meetings = int(slot.get("max_meetings", 1))
-            except (ValueError, TypeError):
-                max_meetings = 1
+            # Replace existing slots for idempotency
+            if not created:
+                LandlordAvailabilitySlotModel.objects.filter(availability=availability).delete()
 
-            if not start_time_str or not end_time_str:
-                continue
+            print(f'Processing {len(time_slots)} time_slots for date {this_date}')
+            for slot in time_slots:
+                start_time_str = slot.get("start_time")
+                end_time_str = slot.get("end_time")
+                try:
+                    max_meetings = int(slot.get("max_meetings", 1))
+                except (ValueError, TypeError):
+                    max_meetings = 1
 
-            try:
-                start_time_obj = datetime.datetime.strptime(start_time_str, "%H:%M").time()
-                end_time_obj   = datetime.datetime.strptime(end_time_str,   "%H:%M").time()
-
-                # Dummy date for duration calc
-                dummy_date = datetime.date(1900, 1, 1)
-                start_dt = datetime.datetime.combine(dummy_date, start_time_obj)
-                end_dt   = datetime.datetime.combine(dummy_date, end_time_obj)
-                if end_dt <= start_dt:
+                if not start_time_str or not end_time_str:
                     continue
 
-                total_seconds = (end_dt - start_dt).total_seconds()
-                slot_seconds  = total_seconds / max_meetings
+                try:
+                    start_time_obj = datetime.datetime.strptime(start_time_str, "%H:%M").time()
+                    end_time_obj = datetime.datetime.strptime(end_time_str, "%H:%M").time()
 
-                for i in range(max_meetings):
-                    slot_start = start_dt + datetime.timedelta(seconds=i * slot_seconds)
-                    slot_end   = start_dt + datetime.timedelta(seconds=(i + 1) * slot_seconds)
+                    # Dummy date for duration calc
+                    dummy_date = datetime.date(1900, 1, 1)
+                    start_dt = datetime.datetime.combine(dummy_date, start_time_obj)
+                    end_dt = datetime.datetime.combine(dummy_date, end_time_obj)
+                    if end_dt <= start_dt or max_meetings <= 0:
+                        continue
 
-                    LandlordAvailabilitySlotModel.objects.create(
-                        availability=availability,
-                        start_time = slot_start.time(),
-                        end_time   = slot_end.time(),
-                    )
-            except Exception as e:
-                print(f"Error processing slot on {this_date}: {e}")
-                continue
+                    total_seconds = int((end_dt - start_dt).total_seconds())
+                    base, remainder = divmod(total_seconds, max_meetings)
+
+                    offset = 0
+                    for i in range(max_meetings):
+                        duration = base + (1 if i < remainder else 0)
+                        slot_start = start_dt + datetime.timedelta(seconds=offset)
+                        slot_end = slot_start + datetime.timedelta(seconds=duration)
+                        offset += duration
+
+                        try:
+                            LandlordAvailabilitySlotModel.objects.create(
+                                availability=availability,
+                                start_time=slot_start.time(),
+                                end_time=slot_end.time(),
+                            )
+                        except IntegrityError:
+                            # Should be rare since we deleted existing ones; ignore duplicates defensively
+                            continue
+                except Exception as e:
+                    print(f"Error processing slot on {this_date}: {e}")
+                    continue
 
     return Response(
         ResponseData.success_without_data("Landlord availability added successfully."),
@@ -217,22 +241,40 @@ def get_landlord_availability_slots(request):
         )
 
     result = []
+    app_status = AppointmentStatusModel.objects.get(code='confirmed')
     for avail in avail_qs.order_by("date"):
         slots_qs = LandlordAvailabilitySlotModel.objects.filter(
             availability=avail,
             is_active=True,
             is_deleted=False
         ).order_by("start_time")
-
-        slots_data = [
-            {
-                "slot_id":    slot.id,
-                "start_time": slot.start_time.strftime("%H:%M"),
-                "end_time":   slot.end_time.strftime("%H:%M"),
-            }
-            for slot in slots_qs
-        ]
-
+        slots_data = []
+        for slot in slots_qs:
+            print(f'slotslot {slot.id}')
+            is_existing_appointment_found = AppointmentBookingModel.objects.filter(
+                landlord_id=ld_id,
+                status=app_status,
+                is_active=True,
+                is_deleted=False,
+                time_slot=slot
+            ).first()
+            print(f'is_existing_appointment_found {is_existing_appointment_found}')
+            if is_existing_appointment_found is None:
+                print(f'empty {slot.availability.date}')
+                slots_data.append(
+                    {
+                        "slot_id":    slot.id,
+                        "start_time": slot.start_time.strftime("%H:%M"),
+                        "end_time":   slot.end_time.strftime("%H:%M"),
+                    }
+                )
+            else:
+                print(f'filled {slot.availability.date}')
+                print(f'svsvdvdsvsvsdvsvsd {is_existing_appointment_found.time_slot.id}')
+                print(f'svsvdvdsvsvsdvsvsd {is_existing_appointment_found.time_slot.start_time}')
+                print(f'svsvdvdsvsvsdvsvsd {is_existing_appointment_found.time_slot.end_time}')
+        print(f'slots_data {slots_data}')
+        print(f'result {result}')
         result.append({
             "date":       avail.date.strftime("%Y-%m-%d"),
             "time_slots": slots_data

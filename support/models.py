@@ -35,7 +35,7 @@ class TenantSupportTicket(models.Model):
     updated_at     = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Ticket #{self.id} (Tenant {self.tenant_id}) – {self.get_status_display()}"
+        return f"Ticket #{self.id} (Tenant {self.tenant_id})"
 
 
 class LandlordSupportTicket(models.Model):
@@ -63,4 +63,4 @@ class LandlordSupportTicket(models.Model):
     updated_at     = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Ticket #{self.id} (Landlord {self.landlord_id}) – {self.get_status_display()}"
+        return f"Ticket #{self.id} (Landlord {self.landlord_id})"

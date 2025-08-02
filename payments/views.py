@@ -9,7 +9,7 @@ from django.utils import timezone
 from landlord.models import LandlordRoomWiseBedModel
 from localization.models import CountryModel
 from payments.models import TenantPaymentModel
-from tenant.models import TenantDetailsModel
+from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from .serializers import TenantPaymentSerializer, TenantSubscriptionStatusSerializer
 from response import Response as ResponseData
 from django.db import transaction
@@ -184,6 +184,7 @@ def tenant_payment_is_active(request):
     and marks the payment record inactive if it has expired.
     """
     # 1️⃣ Validate input
+    print(f'request.datacc {request.data}')
     serializer = TenantSubscriptionStatusSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(
@@ -223,6 +224,16 @@ def tenant_payment_is_active(request):
     currency = bed.country.currency
     tenant = TenantDetailsModel.objects.filter(id=tenant_id).first()
     is_phone_verified = bool(tenant and tenant.phone_number)
+    is_profile_pic_uploaded = bool(tenant and tenant.profile_picture)
+    exists = TenantPersonalityDetailsModel.objects.filter(
+        tenant_id=tenant_id,
+        country__isnull=False,
+        occupation__isnull=False,
+        smoking_habit__isnull=False,
+        drinking_habit__isnull=False,
+        is_deleted=False
+    ).exists()
+    print(f'existsdddd {exists}')
     # 4️⃣ If no payment at all
     if not last_payment:
         return Response(
@@ -232,6 +243,8 @@ def tenant_payment_is_active(request):
                     "currency" : currency,
                     'is_active' : False,
                     'is_phone_verified' : is_phone_verified,
+                    'is_profile_pic_uploaded' : is_profile_pic_uploaded,
+                    'is_required_personality_details_filled' : exists,
                     "amount": str(price) if price is not None else None
                 },
                 "No active subscription for this country",
@@ -255,6 +268,8 @@ def tenant_payment_is_active(request):
                     "currency" : currency,
                     'is_active' : False,
                     'is_phone_verified' : is_phone_verified,
+                    'is_profile_pic_uploaded' : is_profile_pic_uploaded,
+                    'is_required_personality_details_filled' : exists,
                     "amount": str(price) if price is not None else None,
                 },
                 "Subscription has expired for this country",
@@ -269,6 +284,8 @@ def tenant_payment_is_active(request):
             {
                 'is_active' : True,
                 'is_phone_verified' : is_phone_verified,
+                'is_profile_pic_uploaded' : is_profile_pic_uploaded,
+                'is_required_personality_details_filled' : exists,
                 },
             "Subscription is active",
         ),

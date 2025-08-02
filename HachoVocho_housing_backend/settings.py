@@ -56,8 +56,10 @@ INSTALLED_APPS = [
     "translations",
     "rest_framework_simplejwt",
     'support',
-    'core'
+    'core',
+    'parler'
 ]
+
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -241,3 +243,21 @@ REST_FRAMEWORK = {
 
 ONESIGNAL_REST_API_KEY = 'os_v2_app_lc5i5p3xhbc3dc3pjhg6motvf3hciag7fzyuuomaiusii54emsbmxb4nvgwhh6wgztlarsttqlvhoze3csml373yb3mkusw3pgcy7ga'
 ONESIGNAL_APP_ID = '58ba8ebf-7738-45b1-8b6f-49cde63a752e'
+
+LANGUAGES = [
+    ('en', 'English'),
+    ('de', 'German'),
+    # add as many as you need…
+]
+
+PARLER_LANGUAGES = {
+    None: (
+        {'code': 'en'},
+        {'code': 'de'},
+        # …
+    ),
+    'default': {
+        'fallbacks': ['en'],  # defaults to English if translation missing
+        'hide_untranslated': False,
+    }
+}

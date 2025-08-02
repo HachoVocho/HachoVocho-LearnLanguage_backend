@@ -196,7 +196,7 @@ def add_language(request):
 
 
 @api_view(['POST'])
-@authentication_classes([EnhancedJWTValidation, SessionAuthentication])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def get_languages(request):
     """
@@ -204,6 +204,7 @@ def get_languages(request):
     """
     try:
         # Get cached languages
+        print(f'request.data {request.data}')
         cache_key = "languages_all"
         data = cache.get(cache_key)
         if data is None:
@@ -240,6 +241,26 @@ def get_languages(request):
 
             except Exception as e:
                 print(f"Error determining preferred language: {e}")
+        else:
+                try:
+
+                    # Check if user is a tenant
+                    if 'tenant_id' in request.data:
+                        tenant = TenantDetailsModel.objects.filter(id=request.data['tenant_id']).first()
+                        if tenant and tenant.preferred_language:
+                            pref_code = tenant.preferred_language.code
+                    
+                    if request.data['landlord_id']:
+                        print(f'pref_codepref_code_before {pref_code}')
+                        # Check if user is a landlord (if tenant not found or no lang)
+                        if pref_code is None:
+                            landlord = LandlordDetailsModel.objects.filter(id=request.data['landlord_id']).first()
+                            if landlord and landlord.preferred_language:
+                                pref_code = landlord.preferred_language.code
+                                print(f'pref_codepref_code {pref_code}')
+
+                except Exception as e:
+                    print(f"Error determining preferred language: {e}")
 
         return Response({
             "success": True,

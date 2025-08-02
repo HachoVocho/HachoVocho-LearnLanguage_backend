@@ -36,3 +36,10 @@ class LandlordAvailabilitySlotModel(models.Model):
     def __str__(self):
         return f"Slot: {self.start_time} - {self.end_time}"
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["availability", "start_time", "end_time"],
+                name="unique_availability_slot"
+            )
+        ]

@@ -7,7 +7,7 @@ from channels.db import database_sync_to_async
 from django.db.models import Q
 from django.contrib.auth.models import AnonymousUser
 from asgiref.sync import sync_to_async
-
+from googletrans import Translator,LANGUAGES
 from notifications.send_notifications import send_onesignal_notification
 from tenant.models import TenantDetailsModel
 from landlord.models import LandlordDetailsModel
@@ -16,6 +16,7 @@ from user.ws_auth import authenticate_websocket
 from .models import ChatMessageModel
 
 
+translator = Translator()
 # ────────────────────────────────────────────────────────────────────────────────
 # util helpers
 # ────────────────────────────────────────────────────────────────────────────────
@@ -78,10 +79,54 @@ class _BaseChatConsumer(AsyncWebsocketConsumer):
     # --------------------------------------------------------------------- DB helpers
     @database_sync_to_async
     def save_message(self, sender, receiver, text, read):
-        return ChatMessageModel.objects.create(
-            sender=sender, receiver=receiver,
-            message=text, is_read=read
-        ).id
+        sender_id = int(sender.split(":")[1])
+        receiver_id = int(receiver.split(":")[1])
+        sender_role = sender.split(":")[0]
+        receiver_role = receiver.split(":")[0]
+
+        sender_obj = (
+            TenantDetailsModel.objects.filter(id=sender_id).first()
+            if sender_role == "tenant"
+            else LandlordDetailsModel.objects.filter(id=sender_id).first()
+        )
+
+        receiver_obj = (
+            TenantDetailsModel.objects.filter(id=receiver_id).first()
+            if receiver_role == "tenant"
+            else LandlordDetailsModel.objects.filter(id=receiver_id).first()
+        )
+
+        sender_pref_lang = getattr(sender_obj.preferred_language, "code", "en")
+        receiver_pref_lang = getattr(receiver_obj.preferred_language, "code", "en")
+
+        # 1. Detect the actual language the sender wrote in
+        try:
+            detected = translator.detect(text)
+            message_lang = detected.lang
+        except Exception as e:
+            print(f"[WARN] Language detection failed: {e}")
+            message_lang = sender_pref_lang  # fallback
+
+        # 2. Translate for receiver only if needed
+        if message_lang != receiver_pref_lang:
+            try:
+                translated = translator.translate(text, src=message_lang, dest=receiver_pref_lang)
+                receiver_text = translated.text
+            except Exception as e:
+                print(f"[WARN] Translation to receiver language failed: {e}")
+                receiver_text = text  # fallback
+        else:
+            receiver_text = text  # no translation needed
+
+        msg = ChatMessageModel.objects.create(
+            sender=sender,
+            receiver=receiver,
+            original_message=text,
+            translated_message=receiver_text,
+            is_read=read
+        )
+        return msg, message_lang
+
 
     @database_sync_to_async
     def get_messages_of_conversation(self, user, other):
@@ -89,7 +134,7 @@ class _BaseChatConsumer(AsyncWebsocketConsumer):
             (Q(sender=user) & Q(receiver=other)) |
             (Q(sender=other) & Q(receiver=user))
         ).order_by("created_at")
-        return [self._serialize_msg(m) for m in qs]
+        return [self._serialize_msg(m, user) for m in qs]
 
     @database_sync_to_async
     def mark_messages_read(self, me, other):
@@ -99,19 +144,33 @@ class _BaseChatConsumer(AsyncWebsocketConsumer):
         ids = list(qs.values_list("id", flat=True))
         qs.update(is_read=True)
         fresh = ChatMessageModel.objects.filter(id__in=ids).order_by("created_at")
-        return [self._serialize_msg(m) for m in fresh]
+        return [self._serialize_msg(m, me) for m in fresh]
 
     # --------------------------------------------------------------------- static
     @staticmethod
-    def _serialize_msg(m: ChatMessageModel) -> dict:
+    def _serialize_msg(m: ChatMessageModel, current_user_ref: str) -> dict:
+        is_sender = m.sender == current_user_ref
+
+        # Optional: re-detect original language for history (can be expensive)
+        try:
+            detected = translator.detect(m.original_message)
+            original_language = detected.lang
+        except Exception:
+            original_language = None
+
+        display_message = m.original_message if is_sender else m.translated_message
         return {
             "id": m.id,
             "sender": m.sender,
             "receiver": m.receiver,
-            "message": m.message,
+            "original_message": m.original_message,
+            "translated_message": m.translated_message,
+            "original_language": original_language,
+            "display_message": display_message,
             "is_read": m.is_read,
             "created_at": m.created_at.isoformat(),
         }
+
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -156,7 +215,7 @@ class TenantChatConsumer(_BaseChatConsumer):
             group = make_group_name(tenant_ref, landlord_ref)
 
             read = _someone_in_group(group, "landlord")
-            msg_id = await self.save_message(tenant_ref, landlord_ref,
+            msg, message_lang = await self.save_message(tenant_ref, landlord_ref,
                                              data["message"], read)
 
             # dashboard refresh
@@ -167,7 +226,10 @@ class TenantChatConsumer(_BaseChatConsumer):
             payload = {
                 "status": "success", "action": "message_sent",
                 "sender": tenant_ref, "receiver": landlord_ref,
-                "message_id": msg_id, "message": data["message"],
+                "message_id": msg.id,
+                "original_message": msg.original_message,
+                "translated_message": msg.translated_message,
+                "original_language": message_lang,
                 "timestamp": datetime.utcnow().isoformat(),
                 "is_read": read,
             }
@@ -270,7 +332,7 @@ class TenantChatConsumer(_BaseChatConsumer):
                 "landlord_last_name": landlord.last_name or "",
                 "landlord_profile_picture":
                     landlord.profile_picture.url if landlord.profile_picture else None,
-                "latest_message": latest.message if latest else "",
+                "latest_message": latest.original_message if latest else "",
                 "latest_message_time": latest.created_at.isoformat() if latest else "",
                 "unread_count": unread,
             })
@@ -315,7 +377,7 @@ class LandlordChatConsumer(_BaseChatConsumer):
             group = make_group_name(tenant_ref, landlord_ref)
 
             read   = _someone_in_group(group, "tenant")
-            msg_id = await self.save_message(landlord_ref, tenant_ref,
+            msg, message_lang = await self.save_message(landlord_ref, tenant_ref,
                                              data["message"], read)
 
             await refresh_counts_for_groups(
@@ -325,8 +387,11 @@ class LandlordChatConsumer(_BaseChatConsumer):
             payload = {
                 "status": "success", "action": "message_sent",
                 "sender": landlord_ref, "receiver": tenant_ref,
-                "message_id": msg_id, "message": data["message"],
+                "message_id": msg.id,
                 "timestamp": datetime.utcnow().isoformat(),
+                "original_message": msg.original_message,
+                "translated_message": msg.translated_message,
+                "original_language": message_lang,
                 "is_read": read,
             }
             await self.channel_layer.group_send(
@@ -334,6 +399,7 @@ class LandlordChatConsumer(_BaseChatConsumer):
             )
 
             if not read:
+                print(f'tenant_ref.split(":",1)[1] {tenant_ref.split(":",1)[1]}')
                 await sync_to_async(send_onesignal_notification, thread_sensitive=True)(
                     tenant_ids=[tenant_ref.split(":",1)[1]],
                     headings={"en": "Chat Message"},
@@ -414,6 +480,13 @@ class LandlordChatConsumer(_BaseChatConsumer):
                 (Q(sender=tref) & Q(receiver=landlord_ref))
             )
             latest = convo.order_by("-created_at").first()
+            if latest:
+                is_sender = latest.sender == landlord_ref
+                display_message = latest.original_message if is_sender else latest.translated_message
+                latest_time = latest.created_at.isoformat()
+            else:
+                display_message = ""
+                latest_time = ""
             unread = convo.filter(sender=tref, receiver=landlord_ref,
                                   is_read=False).count()
             summary.append({
@@ -422,8 +495,8 @@ class LandlordChatConsumer(_BaseChatConsumer):
                 "tenant_last_name": tenant.last_name or "",
                 "tenant_profile_picture":
                     tenant.profile_picture.url if tenant.profile_picture else None,
-                "latest_message": latest.message if latest else "",
-                "latest_message_time": latest.created_at.isoformat() if latest else "",
+                    "latest_message": display_message,
+                    "latest_message_time": latest_time,
                 "unread_count": unread,
             })
         summary.sort(key=lambda x: x["latest_message_time"], reverse=True)

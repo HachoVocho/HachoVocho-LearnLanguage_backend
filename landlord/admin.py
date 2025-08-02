@@ -20,7 +20,7 @@ from .models import (
 )
 
 from .models import LandlordBedMediaModel, LandlordRoomMediaModel, LandlordPropertyMediaModel
-
+from parler.admin import TranslatableAdmin
 @admin.register(LandlordBedMediaModel)
 class LandlordBedMediaModelAdmin(admin.ModelAdmin):
     list_display = ('bed', 'media_type', 'is_active', 'is_deleted')
@@ -51,7 +51,7 @@ class LandlordEmailVerificationModelAdmin(admin.ModelAdmin):
     list_display = ('id', 'landlord', 'otp', 'is_verified')
 
 @admin.register(LandlordPropertyTypeModel)
-class LandlordPropertyTypeModelAdmin(admin.ModelAdmin):
+class LandlordPropertyTypeModelAdmin(TranslatableAdmin):
     list_display = ('type_name', 'is_active', 'is_deleted', 'created_at', 'deleted_at')
     list_filter = ('is_active', 'is_deleted', 'created_at')
     search_fields = ('type_name', 'description')
@@ -119,15 +119,13 @@ class LandlordQuestionTypeModelAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'deleted_at')
 
 @admin.register(LandlordQuestionModel)
-class LandlordQuestionModelAdmin(admin.ModelAdmin):
-    list_display = ('id', 'question_text', 'question_type')
-    list_filter = ('is_active', 'is_deleted', 'created_at')
+class LandlordQuestionModelAdmin(TranslatableAdmin):
+    list_display = ('id', 'question_type')
     readonly_fields = ('created_at', 'deleted_at')
 
 @admin.register(LandlordOptionModel)
-class LandlordOptionModelAdmin(admin.ModelAdmin):
-    list_display = ('id', 'question', 'option_text')
-    list_filter = ('is_active', 'is_deleted', 'created_at')
+class LandlordOptionModelAdmin(TranslatableAdmin):
+    list_display = ('id', 'question')
     readonly_fields = ('created_at', 'deleted_at')
 
 @admin.register(LandlordAnswerModel)    

@@ -67,7 +67,7 @@ def _get_player_ids(
             is_deleted=False
         ).values_list("player_id", flat=True)
         player_ids.extend(list(tenant_devices))
-
+    print(f'tenant_ids {tenant_ids}')
     # Same for landlords
     if landlord_ids and nt_code:
         landlord_ids = _filter_ids_by_setting(landlord_ids, is_tenant=False, nt_code=nt_code)
@@ -105,6 +105,7 @@ def send_onesignal_notification(
     nt_code = None
     if data and isinstance(data, dict):
         nt_code = data.get("type")
+    print(f'tenant_idsff {tenant_ids}')
     if not player_ids:
         player_ids = _get_player_ids(
             tenant_ids=tenant_ids,

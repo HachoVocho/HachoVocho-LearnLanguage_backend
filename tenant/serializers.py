@@ -11,7 +11,10 @@ import random
 
 class TenantSignupSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(max_length=50)
-    last_name = serializers.CharField(max_length=50)
+    last_name = serializers.CharField(max_length=50,
+                                      required=False,  # Makes the field optional
+        allow_blank=True
+                                      )
     email = serializers.EmailField()
     password = serializers.CharField(
         max_length=128,

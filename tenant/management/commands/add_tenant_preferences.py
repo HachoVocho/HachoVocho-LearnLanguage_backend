@@ -1,246 +1,95 @@
-# your_app/management/commands/add_tenant_preferences.py
-
-from django.core.management.base import BaseCommand
+import json
+from django.core.management.base import BaseCommand, CommandError
 from django.utils.timezone import now
+
 from tenant.models import (
+    LanguageModel,
+    TenantPreferenceQuestionTextModel,
     TenantPreferenceQuestionTypeModel,
     TenantPreferenceQuestionModel,
-    TenantPreferenceOptionModel
+    TenantPreferenceQuestionOptionTextModel,
+    TenantPreferenceOptionModel,
 )
 
+
 class Command(BaseCommand):
-    help = 'Adds tenant preference questions and options to the database'
+    help = 'Import tenant preference questions and options from a JSON file.'
 
-    def handle(self, *args, **kwargs):
-        # Step 1: Define Question Types
-        question_types = [
-            {'code': 'single_mcq', 'name': 'Single Choice MCQ'},
-            {'code': 'multiple_mcq', 'name': 'Multiple Select MCQ'},
-            {'code': 'priority_based', 'name': 'Priority Based'},
-        ]
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--file',
+            type=str,
+            required=True,
+            help='Path to the JSON file containing preference questions.'
+        )
+        parser.add_argument(
+            '--language',
+            type=str,
+            default='en',
+            help='Language code for text entries (default: en).'
+        )
 
-        # Create or get existing question types
-        for qt in question_types:
-            obj, created = TenantPreferenceQuestionTypeModel.objects.get_or_create(
-                type_name=qt['code'],
-                defaults={'description': qt['name']}
+    def handle(self, *args, **options):
+        file_path = options['file']
+        lang_code = options['language']
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (IOError, json.JSONDecodeError) as e:
+            raise CommandError(f'Error reading JSON file: {e}')
+
+        # Ensure language exists
+        language, _ = LanguageModel.objects.get_or_create(code=lang_code)
+
+        for item in data.get('data', []):
+            q_text = item.get('question_text')
+            q_type_data = item.get('question_type')
+
+            # Create or get question text
+            question_text_obj, created = TenantPreferenceQuestionTextModel.objects.get_or_create(
+                text=q_text,
+                language=language,
+                defaults={'created_at': now(), 'is_active': True, 'is_deleted': False}
             )
             if created:
-                self.stdout.write(self.style.SUCCESS(f"Created Question Type: {obj.type_name}"))
-            else:
-                self.stdout.write(f"Question Type already exists: {obj.type_name}")
+                self.stdout.write(self.style.SUCCESS(f'Created QuestionText: {q_text}'))
 
-        # Helper function to get question type instance
-        def get_question_type(code):
+            # Fetch question type model
             try:
-                return TenantPreferenceQuestionTypeModel.objects.get(type_name=code)
+                q_type = TenantPreferenceQuestionTypeModel.objects.get(id=q_type_data['id'])
             except TenantPreferenceQuestionTypeModel.DoesNotExist:
-                self.stdout.write(self.style.ERROR(f"Question Type '{code}' does not exist. Skipping related questions."))
-                return None
+                raise CommandError(f"QuestionType with id {q_type_data['id']} not found.")
 
-        # Step 2: Define Tenant Preference Questions
-        tenant_questions = [
-            {
-                'question_text': "Preferred Property Type",
-                'question_type': 'priority_based',
-                'options': [
-                    "Apartment",
-                    "House",
-                    "Condo",
-                    "Studio",
-                    "Shared Accommodation",
-                    "Other"
-                ]
-            },
-            {
-                'question_text': "Number of Bedrooms",
-                'question_type': 'priority_based',
-                'options': [
-                    "Studio (0 bedrooms)",
-                    "1 Bedroom",
-                    "2 Bedrooms",
-                    "3 Bedrooms",
-                    "4+ Bedrooms"
-                ]
-            },
-            {
-                'question_text': "Number of Bathrooms",
-                'question_type': 'priority_based',
-                'options': [
-                    "1 Bathroom",
-                    "2 Bathrooms",
-                    "3+ Bathrooms"
-                ]
-            },
-            {
-                'question_text': "Preferred Property Size",
-                'question_type': 'priority_based',
-                'options': [
-                    "Less than 500 sq ft",
-                    "500 - 1000 sq ft",
-                    "1000 - 1500 sq ft",
-                    "1500 - 2000 sq ft",
-                    "More than 2000 sq ft"
-                ]
-            },
-            {
-                'question_text': "Preferred Floor Level",
-                'question_type': 'priority_based',
-                'options': [
-                    "Ground Floor",
-                    "1-3",
-                    "4-6",
-                    "7+",
-                    "No Preference"
-                ]
-            },
-            {
-                'question_text': "Preferred Room Location in Property",
-                'question_type': 'priority_based',
-                'options': [
-                    "Center",
-                    "Circumferential"
-                ]
-            },
-            {
-                'question_text': "Preferred Amenities",
-                'question_type': 'multiple_mcq',
-                'options': [
-                    "Wi-Fi",
-                    "Air Conditioning",
-                    "Heating",
-                    "Parking",
-                    "Laundry Facilities",
-                    "Swimming Pool",
-                    "Gym",
-                    "Pet-Friendly",
-                    "Balcony",
-                    "Elevator",
-                    "Security Services",
-                    "Other"
-                ]
-            },
-            {
-                'question_text': "Budget for Rent per Month",
-                'question_type': 'priority_based',
-                'options': [
-                    "Below $500",
-                    "$500 - $1000",
-                    "$1000 - $1500",
-                    "$1500 - $2000",
-                    "Above $2000"
-                ]
-            },
-            {
-                'question_text': "Number of Beds Required",
-                'question_type': 'priority_based',
-                'options': [
-                    "1 Bed",
-                    "2 Beds",
-                    "3 Beds",
-                    "4+ Beds"
-                ]
-            },
-            {
-                'question_text': "Maximum Number of People Allowed",
-                'question_type': 'priority_based',
-                'options': [
-                    "1-2",
-                    "3-4",
-                    "5-6",
-                    "7+"
-                ]
-            },
-            {
-                'question_text': "Smoking Preference",
-                'question_type': 'single_mcq',
-                'options': [
-                    "Non-smoker",
-                    "Occasional Smoker (Outside Only)",
-                    "Smoker (Allowed Inside Property)",
-                    "No Preference"
-                ]
-            },
-            {
-                'question_text': "Alcohol Consumption Preference",
-                'question_type': 'single_mcq',
-                'options': [
-                    "Non-drinker",
-                    "Occasional Drinker (No Alcohol Inside Property)",
-                    "Social Drinker (Alcohol Allowed Inside Property)",
-                    "No Preference"
-                ]
-            },
-            {
-                'question_text': "Pet Ownership Preference",
-                'question_type': 'priority_based',
-                'options': [
-                    "No Pets",
-                    "Small Pets (e.g., Cats, Small Dogs, Fish)",
-                    "Medium Pets (e.g., Medium-sized Dogs)",
-                    "Large Pets (e.g., Large Dogs)",
-                    "No Preference"
-                ]
-            },
-            {
-                'question_text': "Lease Duration Preference",
-                'question_type': 'single_mcq',
-                'options': [
-                    "Short-term Stay (< 6 Months)",
-                    "Medium-term Stay (6 Months to 1 Year)",
-                    "Long-term Stay (1 to 3 Years)",
-                    "Very Long-term Stay (> 3 Years)",
-                    "No Preference"
-                ]
-            },
-            {
-                'question_text': "Availability Start Date",
-                'question_type': 'single_mcq',
-                'options': [
-                    "As Soon as Possible",
-                    "Within 1 Month",
-                    "Within 3 Months",
-                    "Other"
-                ]
-            },
-        ]
-
-        # Step 3: Add Tenant Preference Questions and Options
-        for tq in tenant_questions:
-            # Get question type instance
-            qt = get_question_type(tq['question_type'])
-            if not qt:
-                continue  # Skip if question type not found
-
-            # Create or get the question
-            question, created = TenantPreferenceQuestionModel.objects.get_or_create(
-                question_text=tq['question_text'],
-                question_type=qt,
-                defaults={
-                    'is_active': True,
-                    'is_deleted': False,
-                    'created_at': now()
-                }
+            # Create or get question
+            question_obj, created_q = TenantPreferenceQuestionModel.objects.get_or_create(
+                question_text=question_text_obj,
+                question_type=q_type,
+                defaults={'created_at': now(), 'is_active': True, 'is_deleted': False}
             )
-            if created:
-                self.stdout.write(self.style.SUCCESS(f"Created Question: {question.question_text}"))
-            else:
-                self.stdout.write(f"Question already exists: {question.question_text}")
+            if created_q:
+                self.stdout.write(self.style.SUCCESS(f'Created Question: {q_text}'))
 
-            # Add options to the question
-            for option_text in tq['options']:
-                option, opt_created = TenantPreferenceOptionModel.objects.get_or_create(
-                    question=question,
-                    option_text=option_text,
-                    defaults={
-                        'is_active': True,
-                        'is_deleted': False,
-                        'created_at': now()
-                    }
+            # Process options
+            for opt in item.get('question_options', []):
+                opt_text = opt.get('option_text')
+
+                # Create or get option text
+                option_text_obj, created_opt_text = TenantPreferenceQuestionOptionTextModel.objects.get_or_create(
+                    text=opt_text,
+                    language=language,
+                    defaults={'created_at': now(), 'is_active': True, 'is_deleted': False}
                 )
-                if opt_created:
-                    self.stdout.write(self.style.SUCCESS(f"  - Added Option: {option.option_text}"))
-                else:
-                    self.stdout.write(f"  - Option already exists: {option.option_text}")
+                if created_opt_text:
+                    self.stdout.write(self.style.SUCCESS(f'Created OptionText: {opt_text}'))
 
-        self.stdout.write(self.style.SUCCESS("Tenant preference questions and options have been successfully added."))
+                # Create or get option model
+                option_obj, created_opt = TenantPreferenceOptionModel.objects.get_or_create(
+                    question=question_obj,
+                    option_text=option_text_obj,
+                    defaults={'created_at': now(), 'is_active': True, 'is_deleted': False}
+                )
+                if created_opt:
+                    self.stdout.write(self.style.SUCCESS(f'  Added Option: {opt_text} to Question: {q_text}'))
+
+        self.stdout.write(self.style.SUCCESS('Import completed successfully.'))

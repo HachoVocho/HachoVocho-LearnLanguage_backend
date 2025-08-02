@@ -6,7 +6,7 @@ from django.views.decorators.http import require_POST
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.decorators import api_view,parser_classes
 from appointments.models import AppointmentBookingModel
-from interest_requests.models import LandlordInterestRequestModel, TenantInterestRequestModel
+from interest_requests.models import InterestRequestStatusModel, LandlordInterestRequestModel, TenantInterestRequestModel
 from landlord.models import LandlordRoomWiseBedModel
 from tenant.models import TenantDetailsModel, TenantPersonalityDetailsModel
 from rest_framework.permissions import AllowAny
@@ -40,12 +40,13 @@ def get_active_tenants_sync(bed_id):
             is_active=True
         ).first()
         if not tenant_req:
+            status = InterestRequestStatusModel.objects.get(code='closed')
             tenant_req = TenantInterestRequestModel.objects.filter(
                 tenant=tenant,
                 bed=bed,
                 is_deleted=False,
                 is_active=False,
-                status="closed"
+                status=status
             ).first()
         landlord_req = LandlordInterestRequestModel.objects.filter(
             tenant=tenant,
@@ -59,16 +60,16 @@ def get_active_tenants_sync(bed_id):
                 bed=bed,
                 is_deleted=False,
                 is_active=False,
-                status="closed"
+                status=status
             ).first()
 
         if tenant_req:
-            interest_status = tenant_req.status
+            interest_status = tenant_req.status.code
             message = tenant_req.landlord_message
             interest_shown_by = "tenant"
             request_closed_by = getattr(tenant_req, "request_closed_by", "")
         elif landlord_req:
-            interest_status = landlord_req.status
+            interest_status = landlord_req.status.code
             message = landlord_req.tenant_message
             interest_shown_by = "landlord"
             request_closed_by = getattr(landlord_req, "request_closed_by", "")
